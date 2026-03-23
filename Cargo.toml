@@ -1,0 +1,13 @@
+[package]
+name = "spikenaut-encoder"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "SNN sensory encoding pipelines: Poisson spike trains, rate/temporal/predictive coding, and neuromodulator-driven 16-channel encoding for cyber-physical systems"
+repository = "https://github.com/rmems/spikenaut-encoder"
+keywords = ["snn", "neuromorphic", "spikenaut", "poisson", "encoding"]
+categories = ["science", "simulation"]
+
+[dependencies]
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
