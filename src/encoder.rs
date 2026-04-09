@@ -1,7 +1,7 @@
 use candle_core::{Tensor, Result, Device, Shape, DType};
 
 #[derive(Clone, Debug)]
-pub struct EncoderConfig {
+pub struct EmbeddingEncoderConfig {
     pub v_th: f64, 
 }
 
@@ -19,14 +19,14 @@ impl EncoderState {
 }
 
 pub struct EmbeddingRateEncoder {
-    pub config: EncoderConfig,
+    pub config: EmbeddingEncoderConfig,
     pub normalized_embeddings: Tensor, 
 }
 
 impl EmbeddingRateEncoder {
     /// Ingests OLMo embeddings and applies Linear Min-Max Scaling
     /// to preserve spatial relationships between tokens.
-    pub fn new(embeddings: &Tensor, config: EncoderConfig) -> Result<Self> {
+    pub fn new(embeddings: &Tensor, config: EmbeddingEncoderConfig) -> Result<Self> {
         // Linear Min-Max Scaling: (X - X_min) / (X_max - X_min)
         // We calculate this along the embedding dimension (dim 2 usually: batch, seq, hidden_dim)
         let dim = embeddings.rank() - 1; 
