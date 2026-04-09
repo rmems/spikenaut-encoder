@@ -8,6 +8,9 @@ pub mod poisson;
 pub mod types;
 pub mod spike_encoder;
 
+#[cfg(feature = "candle")]
+pub mod encoder;
+
 pub mod prelude {
     pub use crate::encoders::*;
     pub use crate::modulators::*;
@@ -15,6 +18,9 @@ pub mod prelude {
     pub use crate::types::*;
     pub use crate::Encoder;
     pub use crate::spike_encoder::*;
+
+    #[cfg(feature = "candle")]
+    pub use crate::encoder::*;
 }
 
 use types::EncodedOutput;

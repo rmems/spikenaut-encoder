@@ -101,6 +101,7 @@ impl Encoder for NeuromodSensoryEncoder {
         }
 
         self.update_adaptation(&stimuli, num_inputs * channels_per_input);
+        output.embeddings = Some(stimuli);
         output
     }
 
@@ -128,6 +129,8 @@ mod tests {
 
         let output = encoder.encode(&input);
         assert!(output.spikes.len() > 0);
+        assert!(output.embeddings.is_some());
+        assert_eq!(output.embeddings.unwrap().len(), 4);
     }
 
     #[test]
