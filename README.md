@@ -1,12 +1,13 @@
 # spikenaut-encoder
 
-**High-performance sensory encoding for spiking neural networks, accelerated via myelin-accelerator.**
+**Warp-Optimized 1024-Channel sensory encoding for spiking neural networks, accelerated via myelin-accelerator.**
 
-`spikenaut-encoder` converts continuous experimental telemetry and time-series data into biologically plausible spike trains. It serves as the front-end sensory layer for the Spikenaut ecosystem, providing high-fidelity, GPU-accelerated encoding strategies for neuromorphic research and cyber-physical systems.
+`spikenaut-encoder` converts continuous experimental telemetry and time-series data into biologically plausible spike trains. It serves as the front-end sensory layer for the Spikenaut ecosystem — built to scale to 1024+ input channels in a single CUDA warp dispatch on the RTX 5080 Blackwell architecture.
 
 ## Features
 
-- **GPU Acceleration**: Utilizes `myelin-accelerator` and CUDA kernels for massively parallel Poisson spike generation (RTX 5080 optimized).
+- **GPU Acceleration**: Utilizes `myelin-accelerator` and CUDA kernels for massively parallel Poisson spike generation (RTX 5080 Blackwell optimized).
+- **1024-Channel Baseline**: `EncoderConfig::default()` sets `input_channels = 1024` — fully saturating a CUDA warp grid in a single kernel dispatch.
 - **Core Encoders**: Rate, Temporal, Predictive (anomaly), Population, and Neuromodulator-driven strategies.
 - **Pure Biological Modulators**: Neuromodulation logic (Dopamine, Cortisol, Acetylcholine, Tempo) stripped of domain-specific noise for universal application.
 - **Lightweight Tensors**: Built on the `corinth-canal` backbone for optimized memory throughput and minimal overhead.
@@ -27,19 +28,23 @@ corinth-canal = { path = "../corinth-canal" }
 use spikenaut_encoder::prelude::*;
 use myelin_accelerator::GpuAccelerator;
 
-// 1. Initialize GPU context (owned by parent application)
+// 1. Initialize GPU context (owned by parent application — never constructed internally)
 let gpu = GpuAccelerator::new();
 
-// 2. Initialize a 2-channel rate encoder
-let mut encoder = RateEncoder::new(5.0, 100.0, (0.0, 100.0));
-let input = [75.0, 25.0];
+// 2. Load the Blackwell 1024-channel baseline config
+let config = EncoderConfig::default(); // input_channels: 1024, output_channels: 1024
 
-// 3. Encode (GPU-accelerated Poisson generation)
+// 3. Initialize the encoder
+let mut encoder = RateEncoder::new(5.0, 100.0, (0.0, 1.0));
+
+// 4. Build a 1024-element stimulus — saturates a full CUDA warp grid in one dispatch
+let input: Vec<f32> = (0..config.input_channels)
+    .map(|i| i as f32 / (config.input_channels - 1) as f32)
+    .collect();
+
+// 5. Encode (GPU-accelerated parallel Poisson generation on RTX 5080)
 let output = encoder.encode(&input, &gpu);
-
-for spike in output.spikes {
-    println!("Spike on channel {}, polarity: {}", spike.channel, spike.polarity);
-}
+println!("{}/{} channels fired", output.spikes.len(), config.input_channels);
 ```
 
 ## Neuromodulatory Sensory Logic

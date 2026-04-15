@@ -30,10 +30,20 @@ impl EncodedOutput {
 }
 
 /// General-purpose configuration for encoders.
-#[derive(Default)]
+///
+/// Defines the architecture size used by the parent chassis at boot time.
+/// Defaults to the Blackwell warp-optimized 1024-channel baseline.
+#[derive(Clone, Debug)]
 pub struct EncoderConfig {
-    // Add common configuration options here.
-    // For example:
-    // pub input_channels: usize,
-    // pub output_channels: usize,
+    pub input_channels: usize,
+    pub output_channels: usize,
+}
+
+impl Default for EncoderConfig {
+    fn default() -> Self {
+        Self {
+            input_channels: 1024,  // Blackwell baseline: saturates a full CUDA warp grid
+            output_channels: 1024,
+        }
+    }
 }

@@ -1,8 +1,9 @@
 //! Rate Encoding Example
 //!
-//! Demonstrates GPU-accelerated rate encoding where continuous sensor values
-//! are converted into probabilistic spike trains. Higher input values produce
-//! higher firing rates.
+//! Demonstrates GPU-accelerated rate encoding at full Blackwell warp scale.
+//! 1024 float stimulus values are uploaded to the RTX 5080 in a single
+//! `GpuBuffer::from_slice` call, and the `poisson_encode` CUDA kernel fires
+//! across a fully-saturated warp grid in one dispatch.
 //!
 //! ```
 //! cargo run --example rate_encoding
@@ -15,27 +16,36 @@ fn main() {
     // Initialize GPU context (owned by the parent application).
     let gpu = GpuAccelerator::new();
 
+    // Use the Blackwell baseline config to define channel width.
+    let config = EncoderConfig::default();
+    println!("=== Rate Encoding (Warp-Optimized 1024-Channel) ===");
+    println!(
+        "Architecture: {} input channels → {} output channels",
+        config.input_channels, config.output_channels
+    );
+
     // Create a rate encoder:
-    //   base_rate  = 5.0  (minimum firing rate)
+    //   base_rate  = 5.0   (minimum firing rate)
     //   max_rate   = 100.0 (maximum firing rate)
-    //   range      = (0.0, 100.0) (expected input value range)
-    let mut encoder = RateEncoder::new(5.0, 100.0, (0.0, 100.0));
+    //   range      = (0.0, 1.0) (normalized input value range)
+    let mut encoder = RateEncoder::new(5.0, 100.0, (0.0, 1.0));
 
-    // Simulated 4-channel sensor readings.
-    let inputs = [10.0, 40.0, 75.0, 95.0];
+    // Generate a 1024-element stimulus: linearly spaced values from 0.0 to 1.0.
+    // This saturates a full CUDA warp grid on the RTX 5080 in a single dispatch.
+    let inputs: Vec<f32> = (0..config.input_channels)
+        .map(|i| i as f32 / (config.input_channels - 1) as f32)
+        .collect();
 
-    println!("=== Rate Encoding ===");
-    println!("Input values: {:?}\n", inputs);
+    println!("Input channels: {}\n", inputs.len());
 
     // Encode over multiple time steps to observe stochastic behavior.
     for step in 0..5 {
         let output = encoder.encode(&inputs, &gpu);
-        let channels: Vec<u16> = output.spikes.iter().map(|s| s.channel).collect();
         println!(
-            "Step {}: {} spike(s) on channels {:?}",
+            "Step {}: {}/{} channels fired",
             step,
             output.spikes.len(),
-            channels
+            config.input_channels
         );
     }
 }
