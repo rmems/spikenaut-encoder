@@ -1,10 +1,7 @@
-const MINING_DOPAMINE_DECAY: f32 = 0.97;
 const EVENT_DOPAMINE_DECAY: f32 = 0.95;
 const CORTISOL_DECAY: f32 = 0.90;
 const ACETYLCHOLINE_DECAY: f32 = 0.99;
 const TEMPO_DECAY: f32 = 0.98;
-const FPGA_STRESS_DECAY: f32 = 0.995;
-const VOLATILITY_DECAY: f32 = 0.99;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeuroModulators {
@@ -12,9 +9,6 @@ pub struct NeuroModulators {
     pub cortisol: f32,
     pub acetylcholine: f32,
     pub tempo: f32,
-    pub fpga_stress: f32,
-    pub market_volatility: f32,
-    pub mining_dopamine: f32,
 }
 
 impl NeuroModulators {
@@ -22,9 +16,6 @@ impl NeuroModulators {
         self.dopamine = (self.dopamine * EVENT_DOPAMINE_DECAY).max(0.0);
         self.cortisol = (self.cortisol * CORTISOL_DECAY).max(0.0);
         self.acetylcholine = (self.acetylcholine * ACETYLCHOLINE_DECAY).max(0.0);
-        self.mining_dopamine = (self.mining_dopamine * MINING_DOPAMINE_DECAY).max(0.0);
         self.tempo = (self.tempo * TEMPO_DECAY).max(0.0);
-        self.fpga_stress = (self.fpga_stress * FPGA_STRESS_DECAY).max(0.0);
-        self.market_volatility = (self.market_volatility * VOLATILITY_DECAY).max(0.0);
     }
 }

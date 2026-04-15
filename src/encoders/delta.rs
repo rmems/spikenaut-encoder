@@ -17,7 +17,7 @@ impl DeltaEncoder {
 }
 
 impl Encoder for DeltaEncoder {
-    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
+    fn encode(&mut self, input: &[f32], _gpu: &myelin_accelerator::GpuAccelerator) -> EncodedOutput {
         let mut output = EncodedOutput::new();
         for (i, &value) in input.iter().enumerate() {
             if i >= self.last_values.len() {
@@ -58,17 +58,18 @@ mod tests {
     #[test]
     fn test_delta_encoder() {
         let mut encoder = DeltaEncoder::new(2.0, 1);
-        let output = encoder.encode(&[1.0]); // 1.0 - 0.0 = 1.0 < 2.0 -> no spike
+        let gpu = myelin_accelerator::GpuAccelerator::new();
+        let output = encoder.encode(&[1.0], &gpu); // 1.0 - 0.0 = 1.0 < 2.0 -> no spike
         assert!(output.spikes.is_empty());
 
-        let output = encoder.encode(&[3.5]); // 3.5 - 0.0 = 3.5 > 2.0 -> spike
+        let output = encoder.encode(&[3.5], &gpu); // 3.5 - 0.0 = 3.5 > 2.0 -> spike
         assert!(!output.spikes.is_empty());
         assert_eq!(output.spikes[0].polarity, true);
 
-        let output = encoder.encode(&[4.0]); // 4.0 - 3.5 = 0.5 < 2.0 -> no spike
+        let output = encoder.encode(&[4.0], &gpu); // 4.0 - 3.5 = 0.5 < 2.0 -> no spike
         assert!(output.spikes.is_empty());
 
-        let output = encoder.encode(&[1.0]); // 1.0 - 3.5 = -2.5.abs() = 2.5 > 2.0 -> spike
+        let output = encoder.encode(&[1.0], &gpu); // 1.0 - 3.5 = -2.5.abs() = 2.5 > 2.0 -> spike
         assert!(!output.spikes.is_empty());
         assert_eq!(output.spikes[0].polarity, false);
     }

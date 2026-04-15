@@ -1,0 +1,10 @@
+origin	https://github.com/Spikenaut/spikenaut-encoder.git (fetch)
+origin	https://github.com/Spikenaut/spikenaut-encoder.git (push)
+* main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/feat/final-integration
+  remotes/origin/feat/lib-upgraded
+  remotes/origin/feat/telemetry-neuromod-upgrades
+  remotes/origin/feature/encoder-upgrades
+  remotes/origin/main
+  remotes/origin/ssn-llm

@@ -26,7 +26,7 @@ impl PopulationEncoder {
 }
 
 impl Encoder for PopulationEncoder {
-    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
+    fn encode(&mut self, input: &[f32], _gpu: &myelin_accelerator::GpuAccelerator) -> EncodedOutput {
         let mut output = EncodedOutput::new();
         let mut rng = rand::thread_rng();
 
@@ -58,9 +58,10 @@ mod tests {
     #[test]
     fn test_population_encoder() {
         let mut encoder = PopulationEncoder::new(10, (0.0, 100.0), 10.0);
+        let gpu = myelin_accelerator::GpuAccelerator::new();
         // Encode a value in the middle of the range.
         let input = [50.0];
-        let output = encoder.encode(&input);
+        let output = encoder.encode(&input, &gpu);
 
         // The neuron whose preferred value is closest to 50.0 should have the highest chance of firing.
         // We can't guarantee a spike due to the probabilistic nature, but we can check the rates.
