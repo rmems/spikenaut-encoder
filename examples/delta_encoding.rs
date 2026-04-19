@@ -8,12 +8,9 @@
 //! cargo run --example delta_encoding
 //! ```
 
-use spikenaut_encoder::prelude::*;
-use myelin_accelerator::GpuAccelerator;
+use axon_encoder::prelude::*;
 
 fn main() {
-    let gpu = GpuAccelerator::new();
-
     // Create a delta encoder:
     //   threshold    = 3.0  (minimum change magnitude to trigger a spike)
     //   num_channels = 2
@@ -33,7 +30,7 @@ fn main() {
     println!("Threshold: 3.0\n");
 
     for (step, input) in readings.iter().enumerate() {
-        let output = encoder.encode(input, &gpu);
+        let output = encoder.encode(input);
         if output.spikes.is_empty() {
             println!("Step {}: input {:?} -> no spikes", step, input);
         } else {
@@ -51,10 +48,7 @@ fn main() {
     println!("\n--- encode_deltas_to_spikes utility ---");
     let deltas = [0.1, -0.5, 3.2, -4.0, 0.8];
     let threshold = 1.0;
-    let spikes = encode_deltas_to_spikes(
-        &deltas.iter().map(|&d| d as f64).collect::<Vec<_>>(),
-        threshold as f64,
-    );
+    let spikes = encode_deltas_to_spikes(&deltas, threshold);
     println!("Deltas:    {:?}", deltas);
     println!("Threshold: {}", threshold);
     println!("Spikes:    {:?}", spikes);

@@ -20,10 +20,10 @@ pub mod prelude {
 }
 
 use types::EncodedOutput;
-use myelin_accelerator::GpuAccelerator;
 
 /// The core trait for all encoders in this crate.
 pub trait Encoder {
-    fn encode(&mut self, input: &[f32], gpu: &GpuAccelerator) -> EncodedOutput;
+    /// Encodes a slice of analog values into spike events.
+    fn encode(&mut self, input: &[f32]) -> EncodedOutput;
     fn reset(&mut self);
 }

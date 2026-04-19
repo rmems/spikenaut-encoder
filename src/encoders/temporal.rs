@@ -18,7 +18,7 @@ impl TemporalEncoder {
 }
 
 impl Encoder for TemporalEncoder {
-    fn encode(&mut self, input: &[f32], _gpu: &myelin_accelerator::GpuAccelerator) -> EncodedOutput {
+    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
         let mut output = EncodedOutput::new();
         for (i, &value) in input.iter().enumerate() {
             let channel_history = &mut self.history[i];
@@ -63,12 +63,11 @@ mod tests {
     #[test]
     fn test_temporal_encoder() {
         let mut encoder = TemporalEncoder::new(6, vec![(2.0, 1), (5.0, 2)], 1);
-        let gpu = myelin_accelerator::GpuAccelerator::new();
-        encoder.encode(&[1.0], &gpu);
-        encoder.encode(&[1.0], &gpu);
-        encoder.encode(&[1.0], &gpu);
-        encoder.encode(&[8.0], &gpu);
-        let output = encoder.encode(&[8.0], &gpu);
+        encoder.encode(&[1.0]);
+        encoder.encode(&[1.0]);
+        encoder.encode(&[1.0]);
+        encoder.encode(&[8.0]);
+        let output = encoder.encode(&[8.0]);
         assert!(!output.spikes.is_empty());
     }
 }

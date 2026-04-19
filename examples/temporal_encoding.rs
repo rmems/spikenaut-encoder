@@ -8,12 +8,9 @@
 //! cargo run --example temporal_encoding
 //! ```
 
-use spikenaut_encoder::prelude::*;
-use myelin_accelerator::GpuAccelerator;
+use axon_encoder::prelude::*;
 
 fn main() {
-    let gpu = GpuAccelerator::new();
-
     // Create a temporal encoder:
     //   history_depth      = 10  (number of past values to track)
     //   change_thresholds  = [(2.0, 1), (5.0, 2)]  (threshold, spike value)
@@ -38,13 +35,13 @@ fn main() {
 
     println!("--- Stable phase ---");
     for (i, input) in stable_readings.iter().enumerate() {
-        let output = encoder.encode(input, &gpu);
+        let output = encoder.encode(input);
         println!("Step {}: {} spike(s)", i, output.spikes.len());
     }
 
     println!("\n--- Change phase ---");
     for (i, input) in spike_readings.iter().enumerate() {
-        let output = encoder.encode(input, &gpu);
+        let output = encoder.encode(input);
         let details: Vec<String> = output
             .spikes
             .iter()

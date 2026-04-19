@@ -8,12 +8,9 @@
 //! cargo run --example predictive_encoding
 //! ```
 
-use spikenaut_encoder::prelude::*;
-use myelin_accelerator::GpuAccelerator;
+use axon_encoder::prelude::*;
 
 fn main() {
-    let gpu = GpuAccelerator::new();
-
     // Create a predictive encoder:
     //   history_depth         = 10  (rolling window for prediction)
     //   deviation_thresholds  = [(3.0, 1), (8.0, 2)]  (threshold, spike value)
@@ -33,7 +30,7 @@ fn main() {
     println!("Deviation thresholds: 3.0 (mild), 8.0 (severe)\n");
 
     for (step, &value) in stream.iter().enumerate() {
-        let output = encoder.encode(&[value], &gpu);
+        let output = encoder.encode(&[value]);
         let label = if output.spikes.is_empty() {
             "normal".to_string()
         } else {

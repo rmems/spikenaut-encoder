@@ -9,5 +9,4 @@ pub use rate::RateEncoder;
 pub use temporal::TemporalEncoder;
 pub use predictive::PredictiveEncoder;
 pub use population::PopulationEncoder;
-pub use neuromod::NeuromodSensoryEncoder;
 pub use delta::{DeltaEncoder, encode_deltas_to_spikes};

@@ -1,20 +1,21 @@
 [package]
-name = "spikenaut-encoder"
+name = "axon-encoder"
 version = "0.2.0"
 description = "Flexible sensory encoding pipelines for spiking neural networks — rate, temporal, predictive, population, and neuromodulator-driven encoding for telemetry and cyber-physical data."
 repository = "https://github.com/Spikenaut/spikenaut-encoder"
 license = "GPL-3.0-or-later"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 rand = "0.8"
 ndarray = { version = "0.15", optional = true }
 serde = { version = "1.0", features = ["derive"] }
-corinth-canal = { path = "../corinth-canal" }
-myelin-accelerator = { path = "../myelin-accelerator" }
+corinth-canal = { path = "../corinth-canal", optional = true }
+myelin-accelerator = { path = "../myelin-accelerator", optional = true }
 
 [features]
 default = []
 ndarray = ["dep:ndarray"]
+cuda = ["myelin-accelerator"]
 
 [workspace]

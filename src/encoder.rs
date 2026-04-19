@@ -1,4 +1,4 @@
-use corinth_canal::tensor::{Tensor, zeros};
+use crate::types::{EncodedOutput, SpikeEvent};
 
 #[derive(Clone, Debug)]
 pub struct EmbeddingEncoderConfig {
@@ -7,38 +7,31 @@ pub struct EmbeddingEncoderConfig {
 
 #[derive(Clone)]
 pub struct EncoderState {
-    pub u_enc: Tensor, 
+    pub membrane_potentials: Vec<f32>,
 }
 
 impl EncoderState {
     pub fn new_zeros(len: usize) -> Self {
         Self {
-            u_enc: zeros(len),
+            membrane_potentials: vec![0.0; len],
         }
     }
 }
 
 pub struct EmbeddingRateEncoder {
     pub config: EmbeddingEncoderConfig,
-    pub normalized_embeddings: Tensor, 
+    pub normalized_embeddings: Vec<f32>, 
 }
 
 impl EmbeddingRateEncoder {
-    /// Ingests OLMo embeddings and applies Linear Min-Max Scaling
-    /// to preserve spatial relationships between tokens.
     pub fn new(embeddings: &[f32], config: EmbeddingEncoderConfig) -> Self {
-        // Linear Min-Max Scaling: (X - X_min) / (X_max - X_min)
-        
         let min_val = embeddings.iter().copied().fold(f32::INFINITY, f32::min);
         let max_val = embeddings.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        
         let range = max_val - min_val;
-        
-        // Add a tiny epsilon to prevent division by zero in dead neurons
         let epsilon = 1e-5f32;
         let safe_range = range + epsilon;
 
-        let normalized: Tensor = embeddings.iter()
+        let normalized: Vec<f32> = embeddings.iter()
             .map(|&x| (x - min_val) / safe_range)
             .collect();
 
@@ -48,29 +41,24 @@ impl EmbeddingRateEncoder {
         }
     }
 
-    /// The highly optimized forward step. 
-    /// Note: In production, this block will be replaced by a custom CUDA pass.
-    pub fn forward_t(&self, prev_state: &EncoderState) -> (Tensor, EncoderState) {
+    pub fn forward(&self, prev_state: &EncoderState) -> (EncodedOutput, EncoderState) {
         let len = self.normalized_embeddings.len();
-        let mut new_u_enc = zeros(len);
-        let mut spikes = zeros(len);
+        let mut new_potentials = prev_state.membrane_potentials.clone();
+        let mut output = EncodedOutput::new();
 
         for i in 0..len {
-            // Accumulate current
-            let mut updated_u = prev_state.u_enc[i] + self.normalized_embeddings[i];
+            new_potentials[i] += self.normalized_embeddings[i];
 
-            // Evaluate spikes
-            if updated_u >= self.config.v_th {
-                spikes[i] = 1.0;
-                updated_u -= self.config.v_th; // Soft reset
-            } else {
-                spikes[i] = 0.0;
+            if new_potentials[i] >= self.config.v_th {
+                output.spikes.push(SpikeEvent {
+                    channel: i as u16,
+                    timestamp: 0,
+                    polarity: true,
+                });
+                new_potentials[i] -= self.config.v_th; // Soft reset
             }
-
-            new_u_enc[i] = updated_u;
         }
 
-        // Return the boolean/f32 spikes and the updated state
-        (spikes, EncoderState { u_enc: new_u_enc })
+        (output, EncoderState { membrane_potentials: new_potentials })
     }
 }

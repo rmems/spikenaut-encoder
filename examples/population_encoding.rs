@@ -8,12 +8,9 @@
 //! cargo run --example population_encoding
 //! ```
 
-use spikenaut_encoder::prelude::*;
-use myelin_accelerator::GpuAccelerator;
+use axon_encoder::prelude::*;
 
 fn main() {
-    let gpu = GpuAccelerator::new();
-
     // Create a population encoder:
     //   num_neurons  = 20    (size of the neural population)
     //   input_range  = (0.0, 100.0)
@@ -32,7 +29,7 @@ fn main() {
         let mut spike_counts = vec![0u32; 20];
         let trials = 100;
         for _ in 0..trials {
-            let output = encoder.encode(&[value], &gpu);
+            let output = encoder.encode(&[value]);
             for spike in &output.spikes {
                 spike_counts[spike.channel as usize] += 1;
             }
