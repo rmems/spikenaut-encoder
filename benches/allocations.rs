@@ -1,5 +1,6 @@
 use axon_encoder::encoders::{
-    DeltaEncoder, PopulationEncoder, PredictiveEncoder, RateEncoder, TemporalEncoder,
+    DeltaEncoder, LatencyEncoder, PopulationEncoder, PredictiveEncoder, RateEncoder,
+    TemporalEncoder,
 };
 use axon_encoder::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -106,6 +107,27 @@ fn print_stats(
     );
 }
 
+/// Measures one steady-state step of the reusable path.
+///
+/// The buffer is warmed first so its capacity is already paid for; each measured
+/// call then clears it (capacity survives) and refills it. Anything counted here
+/// is an allocation the sink path failed to avoid.
+fn measure_reused_step(
+    warmups: usize,
+    buffer: &mut Vec<SpikeEvent>,
+    mut step: impl FnMut(&mut Vec<SpikeEvent>),
+) -> AllocationStats {
+    for _ in 0..warmups.max(1) {
+        buffer.clear();
+        step(buffer);
+    }
+
+    measure_operation(|| {
+        buffer.clear();
+        step(buffer);
+    })
+}
+
 fn report_rate_encoder() {
     for scale in SCALES {
         let mut encoder =
@@ -174,6 +196,128 @@ fn report_predictive_encoder() {
     }
 }
 
+fn report_latency_encoder() {
+    for scale in SCALES {
+        let mut encoder = LatencyEncoder::try_new(15, (0.0, 1.0)).expect("valid LatencyEncoder");
+        let input = normalized_input(scale);
+        encoder.encode_step(&input);
+
+        let stats = measure_operation(|| encoder.encode_step(&input));
+        print_stats("LatencyEncoder", "encode_step", "scale", scale, stats);
+    }
+}
+
+fn report_rate_encoder_into() {
+    for scale in SCALES {
+        let mut encoder =
+            RateEncoder::try_new(5.0, 100.0, (0.0, 1.0), RateEncoder::DEFAULT_DT_SECONDS)
+                .expect("valid RateEncoder");
+        let input = normalized_input(scale);
+        let mut buffer = Vec::new();
+
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            encoder.encode_step_into(&input, sink);
+        });
+        print_stats("RateEncoder", "encode_step_into", "scale", scale, stats);
+    }
+}
+
+fn report_population_encoder_into() {
+    for neurons in SCALES {
+        let mut encoder = PopulationEncoder::try_new(neurons, (50.0, 100.0), 10.0)
+            .expect("valid PopulationEncoder");
+        let input = [75.0_f32];
+        let mut buffer = Vec::new();
+
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            encoder.encode_into(&input, sink);
+        });
+        print_stats(
+            "PopulationEncoder",
+            "encode_into",
+            "neurons",
+            neurons,
+            stats,
+        );
+    }
+}
+
+fn report_delta_encoder_into() {
+    for scale in SCALES {
+        let mut encoder = DeltaEncoder::try_new(0.1, scale).expect("valid DeltaEncoder");
+        let baseline = normalized_input(scale);
+        let shifted = shifted_input(scale, 0.25);
+        let mut use_shifted = true;
+        let mut buffer = Vec::new();
+
+        // Alternating inputs keep every channel crossing the threshold, so the
+        // measured step emits a full-width burst rather than settling silent.
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            let input = if use_shifted { &shifted } else { &baseline };
+            use_shifted = !use_shifted;
+            encoder.encode_step_into(input, sink);
+        });
+        print_stats("DeltaEncoder", "encode_step_into", "scale", scale, stats);
+    }
+}
+
+fn report_temporal_encoder_into() {
+    for scale in SCALES {
+        let mut encoder =
+            TemporalEncoder::try_new(6, vec![(0.2, 1)], scale).expect("valid TemporalEncoder");
+        let low = constant_input(scale, 0.0);
+        let high = constant_input(scale, 1.0);
+        let mut buffer = Vec::new();
+
+        for input in [&low, &low, &low, &high, &high, &high] {
+            encoder.encode_step(input);
+        }
+
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            encoder.encode_step_into(&high, sink);
+        });
+        print_stats("TemporalEncoder", "encode_step_into", "scale", scale, stats);
+    }
+}
+
+fn report_predictive_encoder_into() {
+    for scale in SCALES {
+        let mut encoder =
+            PredictiveEncoder::try_new(5, vec![(0.2, 1)], scale).expect("valid PredictiveEncoder");
+        let low = constant_input(scale, 0.0);
+        let high = constant_input(scale, 1.0);
+        let mut buffer = Vec::new();
+
+        for _ in 0..5 {
+            encoder.encode_step(&low);
+        }
+
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            encoder.encode_step_into(&high, sink);
+        });
+        print_stats(
+            "PredictiveEncoder",
+            "encode_step_into",
+            "scale",
+            scale,
+            stats,
+        );
+    }
+}
+
+fn report_latency_encoder_into() {
+    for scale in SCALES {
+        let mut encoder = LatencyEncoder::try_new(15, (0.0, 1.0)).expect("valid LatencyEncoder");
+        let input = normalized_input(scale);
+        let mut buffer = Vec::new();
+
+        let stats = measure_reused_step(2, &mut buffer, |sink| {
+            encoder.encode_step_into(&input, sink);
+        });
+        print_stats("LatencyEncoder", "encode_step_into", "scale", scale, stats);
+    }
+}
+
 fn report_poisson_encoder() {
     for steps in POISSON_STEPS {
         let encoder = PoissonEncoder::new(steps);
@@ -189,5 +333,13 @@ fn main() {
     report_delta_encoder();
     report_temporal_encoder();
     report_predictive_encoder();
+    report_latency_encoder();
+    // Reusable-storage counterparts: same encoders, same scales, one buffer.
+    report_rate_encoder_into();
+    report_population_encoder_into();
+    report_delta_encoder_into();
+    report_temporal_encoder_into();
+    report_predictive_encoder_into();
+    report_latency_encoder_into();
     report_poisson_encoder();
 }

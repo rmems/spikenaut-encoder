@@ -35,6 +35,14 @@
 //! See the [`time`] module for the full contract: batch versus streaming, spike
 //! ordering, and conversion guidance for simulators and hardware adapters.
 //!
+//! ## Reusing storage
+//!
+//! `encode` / `encode_step` allocate the `Vec<SpikeEvent>` they return.
+//! [`Encoder::encode_into`] / [`Encoder::encode_step_into`] write the same
+//! spikes into caller-owned storage instead, so a runtime can refill one buffer
+//! forever — or translate spikes straight into its own event type by
+//! implementing [`SpikeSink`]. See the [`sink`] module.
+//!
 //! [`SpikeEvent::timestamp`]: types::SpikeEvent::timestamp
 //! [`TickOffset`]: time::TickOffset
 //! [`TimeCursor`]: time::TimeCursor
@@ -49,12 +57,14 @@ pub mod modulators;
 pub mod ndarray_ext;
 pub mod poisson;
 pub mod rng;
+pub mod sink;
 pub mod time;
 pub mod types;
 
 pub use error::EncoderError;
 #[cfg(feature = "ndarray")]
 pub use ndarray_ext::NdarrayEncoderExt;
+pub use sink::SpikeSink;
 
 pub mod prelude {
     pub use crate::Encoder;
@@ -66,6 +76,7 @@ pub mod prelude {
     #[cfg(feature = "ndarray")]
     pub use crate::ndarray_ext::NdarrayEncoderExt;
     pub use crate::poisson::*;
+    pub use crate::sink::*;
     pub use crate::time::*;
     pub use crate::types::*;
 }
@@ -73,6 +84,18 @@ pub mod prelude {
 use modulators::{EncodingGains, NeuroModulators, NeuromodulatorGainCurves};
 use time::TimeModel;
 use types::EncodedOutput;
+
+/// Moves an owned output's spikes into `sink`.
+///
+/// Backs the default `encode_*_into` implementations: correct for any encoder,
+/// but it still allocates the intermediate `EncodedOutput`. Encoders in this
+/// crate override those methods to write into the sink directly.
+fn drain_spikes_into(output: EncodedOutput, sink: &mut dyn SpikeSink) {
+    sink.reserve(output.spikes.len());
+    for spike in output.spikes {
+        sink.push(spike);
+    }
+}
 
 /// Encoders that can apply neuromodulator-driven gain curves.
 ///
@@ -136,6 +159,37 @@ pub trait ModulatedEncoder: Encoder {
         self.encode_with_gains(input, gains)
     }
 
+    /// Gain-scaled [`encode_with_gains`](Self::encode_with_gains) that writes
+    /// into a caller-owned [`SpikeSink`].
+    ///
+    /// Same spikes as `encode_with_gains`, appended to `sink` instead of
+    /// returned in a freshly allocated [`EncodedOutput`]. The default delegates
+    /// to `encode_with_gains`; encoders in this crate override it to skip that
+    /// allocation.
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        drain_spikes_into(self.encode_with_gains(input, gains), sink);
+    }
+
+    /// Streaming counterpart of
+    /// [`encode_with_gains_into`](Self::encode_with_gains_into).
+    ///
+    /// Mirrors [`encode_step_with_gains`](Self::encode_step_with_gains), so an
+    /// encoder whose streaming path differs from its batch path must override
+    /// this too.
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        drain_spikes_into(self.encode_step_with_gains(input, gains), sink);
+    }
+
     /// Encodes input using neuromodulator-driven gain curves.
     fn encode_with_modulators(
         &mut self,
@@ -155,6 +209,30 @@ pub trait ModulatedEncoder: Encoder {
     ) -> EncodedOutput {
         self.encode_step_with_gains(input, gain_curves.evaluate(modulators))
     }
+
+    /// Neuromodulated [`encode_with_gains_into`](Self::encode_with_gains_into):
+    /// evaluates `gain_curves` against `modulators`, then writes into `sink`.
+    fn encode_with_modulators_into(
+        &mut self,
+        input: &[f32],
+        modulators: &NeuroModulators,
+        gain_curves: &NeuromodulatorGainCurves,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_gains_into(input, gain_curves.evaluate(modulators), sink);
+    }
+
+    /// Streaming counterpart of
+    /// [`encode_with_modulators_into`](Self::encode_with_modulators_into).
+    fn encode_step_with_modulators_into(
+        &mut self,
+        input: &[f32],
+        modulators: &NeuroModulators,
+        gain_curves: &NeuromodulatorGainCurves,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_step_with_gains_into(input, gain_curves.evaluate(modulators), sink);
+    }
 }
 
 /// The core trait for all encoders in this crate.
@@ -164,6 +242,13 @@ pub trait ModulatedEncoder: Encoder {
 ///
 /// - **Batch mode** (`encode`): Process a complete input vector at once.
 /// - **Streaming mode** (`encode_step`): Process incrementally, one step at a time.
+///
+/// Both modes come in two flavors: the ergonomic one that returns an owned
+/// [`EncodedOutput`], and the allocation-reusing
+/// [`encode_into`](Encoder::encode_into) /
+/// [`encode_step_into`](Encoder::encode_step_into) that write into a
+/// caller-owned [`SpikeSink`]. They emit identical spikes; pick the second when
+/// a per-call allocation matters.
 ///
 /// # Time semantics
 ///
@@ -210,6 +295,77 @@ pub trait Encoder {
     /// An `EncodedOutput` containing any spike events generated in this step
     fn encode_step(&mut self, input: &[f32]) -> EncodedOutput {
         self.encode(input)
+    }
+
+    /// Encodes a slice into caller-owned storage (batch mode).
+    ///
+    /// The allocation-reusing counterpart of [`encode`](Encoder::encode): the
+    /// same spikes, in the same order, **appended** to `sink` instead of
+    /// returned in a freshly allocated [`EncodedOutput`]. A runtime that clears
+    /// and refills one buffer per step allocates once rather than once per call.
+    ///
+    /// `sink` is never cleared, so a caller that wants one step per buffer
+    /// clears it first. Only spikes travel this path — see [`SpikeSink`] for
+    /// the full contract.
+    ///
+    /// # Overriding
+    ///
+    /// The default is correct for any encoder but still allocates: it calls
+    /// `encode` and moves the resulting spikes across. Every encoder in this
+    /// crate overrides it to write into `sink` directly; an out-of-crate
+    /// encoder that cares about allocations should do the same.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use axon_encoder::prelude::*;
+    /// # fn main() -> Result<(), EncoderError> {
+    /// let mut encoder = LatencyEncoder::try_new(9, (0.0, 1.0))?;
+    /// let mut buffer: Vec<SpikeEvent> = Vec::new();
+    ///
+    /// encoder.encode_into(&[1.0, 0.0], &mut buffer);
+    /// assert_eq!(buffer, encoder.encode(&[1.0, 0.0]).spikes);
+    ///
+    /// // Reused across steps: clear keeps the capacity the first call bought.
+    /// buffer.clear();
+    /// encoder.encode_into(&[0.5], &mut buffer);
+    /// assert_eq!(buffer.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        drain_spikes_into(self.encode(input), sink);
+    }
+
+    /// Encodes a single step into caller-owned storage (streaming mode).
+    ///
+    /// Stands to [`encode_step`](Encoder::encode_step) exactly as
+    /// [`encode_into`](Encoder::encode_into) stands to
+    /// [`encode`](Encoder::encode), including the append-don't-clear contract.
+    /// A stateful encoder that overrides `encode_step` must override this too,
+    /// or the two streaming paths will drift apart.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use axon_encoder::prelude::*;
+    /// # fn main() -> Result<(), EncoderError> {
+    /// let mut encoder = RateEncoder::try_new(0.0, 10.0, (0.0, 1.0), 0.1)?;
+    /// let mut buffer: Vec<SpikeEvent> = Vec::new();
+    ///
+    /// // One buffer drives the whole stream; state still advances per call.
+    /// let mut total = 0;
+    /// for _ in 0..4 {
+    ///     buffer.clear();
+    ///     encoder.encode_step_into(&[1.0], &mut buffer);
+    ///     total += buffer.len();
+    /// }
+    /// assert_eq!(total, 4); // 10 Hz * 0.1 s = one spike per step
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        drain_spikes_into(self.encode_step(input), sink);
     }
 
     /// Describes how this encoder places spikes in time.

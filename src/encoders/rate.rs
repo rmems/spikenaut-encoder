@@ -202,15 +202,23 @@ impl RateEncoder {
         self.phases[channel_idx] = frac;
     }
 
-    fn encode_with_rate_scale(&mut self, input: &[f32], rate_scale: f32) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
+    /// Batch spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public batch encoding path routes through here, so the returning
+    /// and sink-based APIs cannot drift apart.
+    fn encode_with_rate_scale_into(
+        &mut self,
+        input: &[f32],
+        rate_scale: f32,
+        sink: &mut dyn SpikeSink,
+    ) {
         if input.is_empty() {
-            return output;
+            return;
         }
         // Match PopulationEncoder: non-finite or non-positive scales fully silence.
         // Avoids NaN probabilities that would silently never spike.
         if !rate_scale.is_finite() || rate_scale <= 0.0 {
-            return output;
+            return;
         }
 
         let mut rng = rand::rng();
@@ -223,10 +231,14 @@ impl RateEncoder {
             let probability = crate::poisson::probability_from_rate_hz(rate, self.dt_seconds);
 
             if crate::rng::gen_unit_f32_with_rng(&mut rng) < probability {
-                output.spikes.push(SpikeEvent::at_step_start(channel, true));
+                sink.push(SpikeEvent::at_step_start(channel, true));
             }
         }
+    }
 
+    fn encode_with_rate_scale(&mut self, input: &[f32], rate_scale: f32) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_with_rate_scale_into(input, rate_scale, &mut output.spikes);
         output
     }
 
@@ -256,17 +268,22 @@ impl RateEncoder {
         &mut self,
         channel: u16,
         channel_idx: usize,
-        output: &mut EncodedOutput,
+        sink: &mut dyn SpikeSink,
     ) {
         let pending = self.pending_spikes[channel_idx];
         if pending == 0 {
             return;
         }
         let emit = pending.min(Self::MAX_SPIKES_PER_CHANNEL_PER_STEP as u64) as usize;
+        if emit > 1 {
+            // Only worth a hint for a drained backlog; the common single-spike
+            // case skips the virtual call entirely.
+            sink.reserve(emit);
+        }
         // Coincident repeats: contiguous, same offset, mutually unordered — the
         // run length is this channel's spike count for the step.
         for _ in 0..emit {
-            output.spikes.push(SpikeEvent::at_step_start(channel, true));
+            sink.push(SpikeEvent::at_step_start(channel, true));
         }
         self.pending_spikes[channel_idx] = pending - emit as u64;
         // Any remaining whole spikes stay queued for subsequent steps.
@@ -276,10 +293,18 @@ impl RateEncoder {
         rate_scale.is_finite() && rate_scale > 0.0
     }
 
-    fn encode_step_with_rate_scale(&mut self, input: &[f32], rate_scale: f32) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
+    /// Streaming spike-emitting core: writes straight into `sink`.
+    ///
+    /// Allocation-free once the per-channel accumulators are sized, which
+    /// happens on the first call for a given channel count.
+    fn encode_step_with_rate_scale_into(
+        &mut self,
+        input: &[f32],
+        rate_scale: f32,
+        sink: &mut dyn SpikeSink,
+    ) {
         if input.is_empty() {
-            return output;
+            return;
         }
 
         self.ensure_accumulators(input.len());
@@ -298,9 +323,13 @@ impl RateEncoder {
             }
             let increment = self.streaming_increment(value, rate_scale);
             self.apply_streaming_increment(i, increment);
-            self.emit_capped_channel_spikes(channel, i, &mut output);
+            self.emit_capped_channel_spikes(channel, i, sink);
         }
+    }
 
+    fn encode_step_with_rate_scale(&mut self, input: &[f32], rate_scale: f32) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_step_with_rate_scale_into(input, rate_scale, &mut output.spikes);
         output
     }
 
@@ -398,6 +427,14 @@ impl Encoder for RateEncoder {
         self.encode_step_with_rate_scale(input, 1.0)
     }
 
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_with_rate_scale_into(input, 1.0, sink);
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_step_with_rate_scale_into(input, 1.0, sink);
+    }
+
     /// One call is one tick, sized by `dt_seconds`.
     ///
     /// Every spike lands at [`TickOffset::ZERO`](crate::time::TickOffset::ZERO)
@@ -431,6 +468,24 @@ impl ModulatedEncoder for RateEncoder {
 
     fn encode_step_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
         self.encode_step_with_rate_scale(input, gains.sanitize().firing_rate_scale)
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_rate_scale_into(input, gains.sanitize().firing_rate_scale, sink);
+    }
+
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_step_with_rate_scale_into(input, gains.sanitize().firing_rate_scale, sink);
     }
 }
 

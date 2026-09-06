@@ -89,12 +89,16 @@ impl TemporalEncoder {
         })
     }
 
-    fn encode_with_threshold_scale(
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public encoding path on this encoder routes through here, so the
+    /// returning and sink-based APIs cannot drift apart.
+    fn encode_with_threshold_scale_into(
         &mut self,
         input: &[f32],
         threshold_scale: f32,
-    ) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
+        sink: &mut dyn SpikeSink,
+    ) {
         for (i, &value) in input.iter().enumerate() {
             if i >= self.history.len() {
                 break;
@@ -120,12 +124,30 @@ impl TemporalEncoder {
             for &(threshold, _spike_val) in self.change_thresholds.iter().rev() {
                 if change > (threshold * threshold_scale).max(0.0) {
                     // Or use spike_val to determine polarity/strength.
-                    output.spikes.push(SpikeEvent::at_step_start(channel, true));
+                    sink.push(SpikeEvent::at_step_start(channel, true));
                     break; // Only fire one spike per channel per step
                 }
             }
         }
+    }
+
+    fn encode_with_threshold_scale(
+        &mut self,
+        input: &[f32],
+        threshold_scale: f32,
+    ) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_with_threshold_scale_into(input, threshold_scale, &mut output.spikes);
         output
+    }
+
+    /// Streaming inputs are truncated to the configured channel count.
+    fn clamp_to_channels<'a>(&self, input: &'a [f32]) -> &'a [f32] {
+        if input.len() > self.history.len() {
+            &input[..self.history.len()]
+        } else {
+            input
+        }
     }
 
     /// Encodes input using neuromodulator-driven gain curves.
@@ -162,12 +184,17 @@ impl Encoder for TemporalEncoder {
     }
 
     fn encode_step(&mut self, input: &[f32]) -> EncodedOutput {
-        let safe_input = if input.len() > self.history.len() {
-            &input[..self.history.len()]
-        } else {
-            input
-        };
+        let safe_input = self.clamp_to_channels(input);
         self.encode_with_threshold_scale(safe_input, 1.0)
+    }
+
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_with_threshold_scale_into(input, 1.0, sink);
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        let safe_input = self.clamp_to_channels(input);
+        self.encode_with_threshold_scale_into(safe_input, 1.0, sink);
     }
 
     /// One call is one tick; batch and streaming are identical here.
@@ -189,12 +216,18 @@ impl Encoder for TemporalEncoder {
 
 impl ModulatedEncoder for TemporalEncoder {
     fn encode_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
-        let safe_input = if input.len() > self.history.len() {
-            &input[..self.history.len()]
-        } else {
-            input
-        };
+        let safe_input = self.clamp_to_channels(input);
         self.encode_with_threshold_scale(safe_input, gains.sanitize().threshold_scale)
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        let safe_input = self.clamp_to_channels(input);
+        self.encode_with_threshold_scale_into(safe_input, gains.sanitize().threshold_scale, sink);
     }
 }
 

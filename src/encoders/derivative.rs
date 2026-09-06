@@ -80,16 +80,12 @@ impl DerivativeEncoder {
             thresholds,
         })
     }
-}
 
-impl Encoder for DerivativeEncoder {
-    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
-        self.encode_step(input)
-    }
-
-    fn encode_step(&mut self, current_values: &[f32]) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
-
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public encoding path on this encoder routes through here, so the
+    /// returning and sink-based APIs cannot drift apart.
+    fn encode_step_into_sink(&mut self, current_values: &[f32], sink: &mut dyn SpikeSink) {
         for (i, &current_val) in current_values.iter().enumerate() {
             if i >= self.thresholds.len() {
                 break;
@@ -99,14 +95,14 @@ impl Encoder for DerivativeEncoder {
 
             // Excitatory spike on positive jump exceeding threshold
             if delta > self.thresholds[i] {
-                output.spikes.push(SpikeEvent::at_step_start(
+                sink.push(SpikeEvent::at_step_start(
                     u16::try_from(i).expect("channel index exceeds u16::MAX"),
                     true,
                 ));
             }
             // Inhibitory/Negative spike on sudden drop
             else if delta < -self.thresholds[i] {
-                output.spikes.push(SpikeEvent::at_step_start(
+                sink.push(SpikeEvent::at_step_start(
                     u16::try_from(i).expect("channel index exceeds u16::MAX"),
                     false,
                 ));
@@ -114,7 +110,26 @@ impl Encoder for DerivativeEncoder {
 
             self.last_values[i] = current_val;
         }
+    }
+}
+
+impl Encoder for DerivativeEncoder {
+    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
+        self.encode_step(input)
+    }
+
+    fn encode_step(&mut self, current_values: &[f32]) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_step_into_sink(current_values, &mut output.spikes);
         output
+    }
+
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_step_into_sink(input, sink);
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_step_into_sink(input, sink);
     }
 
     /// One call is one tick; `encode` and `encode_step` are the same path.

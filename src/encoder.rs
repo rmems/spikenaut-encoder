@@ -45,6 +45,16 @@ impl EncoderState {
 /// Accumulates normalized embedding components into per-channel membrane
 /// potentials and emits a spike when the threshold is crossed (soft reset).
 ///
+/// # No `SpikeSink` path
+///
+/// This type does not implement [`Encoder`](crate::Encoder) — it threads state
+/// explicitly through [`forward`](Self::forward) rather than owning it — so it
+/// is an explicit exception to the crate's allocation-reusing
+/// [`SpikeSink`](crate::sink::SpikeSink) path. A sink would not make `forward`
+/// allocation-free anyway: it returns a freshly built [`EncoderState`] per
+/// call, which is the dominant allocation. Callers wanting a reusable spike
+/// buffer can drain the returned `EncodedOutput::spikes` into one.
+///
 /// # Examples
 ///
 /// ```rust
