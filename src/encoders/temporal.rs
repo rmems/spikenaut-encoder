@@ -93,11 +93,11 @@ impl TemporalEncoder {
     ///
     /// Every public encoding path on this encoder routes through here, so the
     /// returning and sink-based APIs cannot drift apart.
-    fn encode_with_threshold_scale_into(
+    fn encode_with_threshold_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         threshold_scale: f32,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         for (i, &value) in input.iter().enumerate() {
             if i >= self.history.len() {
@@ -189,12 +189,16 @@ impl Encoder for TemporalEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_with_threshold_scale_into(input, 1.0, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(input, 1.0, sink)
+        });
     }
 
     fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
         let safe_input = self.clamp_to_channels(input);
-        self.encode_with_threshold_scale_into(safe_input, 1.0, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(safe_input, 1.0, sink)
+        });
     }
 
     /// One call is one tick; batch and streaming are identical here.
@@ -227,7 +231,10 @@ impl ModulatedEncoder for TemporalEncoder {
         sink: &mut dyn SpikeSink,
     ) {
         let safe_input = self.clamp_to_channels(input);
-        self.encode_with_threshold_scale_into(safe_input, gains.sanitize().threshold_scale, sink);
+        let threshold_scale = gains.sanitize().threshold_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(safe_input, threshold_scale, sink)
+        });
     }
 }
 

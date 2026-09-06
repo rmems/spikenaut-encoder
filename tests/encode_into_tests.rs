@@ -29,6 +29,45 @@ fn assert_paths_agree<E: Encoder>(
     }
 }
 
+/// Batch counterpart of [`assert_paths_agree`]: `encode_into` against `encode`.
+fn assert_batch_paths_agree<E: Encoder>(
+    label: &str,
+    mut returning: E,
+    mut sink_based: E,
+    steps: &[&[f32]],
+) {
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for (index, input) in steps.iter().enumerate() {
+        let expected = returning.encode(input).spikes;
+
+        buffer.clear();
+        sink_based.encode_into(input, &mut buffer);
+
+        assert_eq!(buffer, expected, "{label}: batch step {index} diverged");
+    }
+}
+
+/// Gain-scaled equivalence: `encode_with_gains_into` against `encode_with_gains`.
+fn assert_gain_paths_agree<E: ModulatedEncoder>(
+    label: &str,
+    mut returning: E,
+    mut sink_based: E,
+    gains: EncodingGains,
+    steps: &[&[f32]],
+) {
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for (index, input) in steps.iter().enumerate() {
+        let expected = returning.encode_with_gains(input, gains).spikes;
+
+        buffer.clear();
+        sink_based.encode_with_gains_into(input, gains, &mut buffer);
+
+        assert_eq!(buffer, expected, "{label}: gain step {index} diverged");
+    }
+}
+
 #[test]
 fn delta_encoder_sink_path_matches_returning_path() {
     let steps: &[&[f32]] = &[&[0.0, 0.0], &[0.5, 0.0], &[0.5, -0.9], &[0.51, -0.9]];
@@ -450,4 +489,345 @@ fn inherited_sink_defaults_work_for_out_of_crate_encoders() {
     buffer.clear();
     encoder.encode_step_into(&[0.0, 3.0], &mut buffer);
     assert_eq!(buffer, vec![SpikeEvent::at_step_start(1, true)]);
+}
+
+// --- Batch entry point (`encode_into`) on every deterministic encoder ---------
+
+#[test]
+fn batch_sink_path_matches_encode_for_deterministic_encoders() {
+    let two_channel: &[&[f32]] = &[&[0.0, 0.0], &[0.5, -0.9], &[0.51, -0.9], &[2.0, 2.0]];
+
+    assert_batch_paths_agree(
+        "DeltaEncoder",
+        DeltaEncoder::new(0.1, 2),
+        DeltaEncoder::new(0.1, 2),
+        two_channel,
+    );
+    assert_batch_paths_agree(
+        "DerivativeEncoder",
+        DerivativeEncoder::new(vec![0.5, 0.5]),
+        DerivativeEncoder::new(vec![0.5, 0.5]),
+        two_channel,
+    );
+    assert_batch_paths_agree(
+        "LatencyEncoder",
+        LatencyEncoder::new(9, (0.0, 1.0)),
+        LatencyEncoder::new(9, (0.0, 1.0)),
+        &[&[1.0, 0.0, 0.5], &[f32::NAN, 2.0, -1.0]],
+    );
+    assert_batch_paths_agree(
+        "PhaseEncoder",
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        &[&[0.0, 0.5, 1.0], &[1.0, f32::NAN, 0.25], &[0.75, 0.75, 0.0]],
+    );
+
+    // Five warm-up steps establish the prediction, then a jump forces spikes.
+    let low: &[f32] = &[0.0, 0.0];
+    let high: &[f32] = &[1.0, -1.0];
+    assert_batch_paths_agree(
+        "PredictiveEncoder",
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        &[low, low, low, low, low, high, high, low],
+    );
+    assert_batch_paths_agree(
+        "TemporalEncoder",
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        &[low, low, low, high, high, high, low, high],
+    );
+}
+
+#[test]
+fn population_encoder_streaming_sink_entry_point_holds_the_invariants() {
+    // `encode_step_into` is its own entry point even where streaming delegates
+    // to the batch path, so it needs its own exercise.
+    let mut encoder = PopulationEncoder::new(32, (0.0, 100.0), 10.0);
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for _ in 0..16 {
+        buffer.clear();
+        encoder.encode_step_into(&[50.0], &mut buffer);
+
+        assert!(buffer.len() <= 32);
+        assert!(buffer.iter().all(|spike| spike.timestamp == 0));
+    }
+}
+
+// --- Gain-scaled sink path ----------------------------------------------------
+
+#[test]
+fn gain_sink_path_matches_returning_path_for_deterministic_encoders() {
+    let threshold_gains = EncodingGains {
+        threshold_scale: 2.0,
+        ..EncodingGains::identity()
+    };
+    let two_channel: &[&[f32]] = &[&[0.0, 0.0], &[0.5, -0.9], &[0.51, -0.9], &[2.0, 2.0]];
+
+    assert_gain_paths_agree(
+        "DeltaEncoder",
+        DeltaEncoder::new(0.1, 2),
+        DeltaEncoder::new(0.1, 2),
+        threshold_gains,
+        two_channel,
+    );
+
+    let low: &[f32] = &[0.0, 0.0];
+    let high: &[f32] = &[1.0, -1.0];
+    assert_gain_paths_agree(
+        "PredictiveEncoder",
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        threshold_gains,
+        &[low, low, low, low, low, high, high, low],
+    );
+    assert_gain_paths_agree(
+        "TemporalEncoder",
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        threshold_gains,
+        &[low, low, low, high, high, high, low, high],
+    );
+
+    let sensitivity_gains = EncodingGains {
+        sensitivity_scale: 0.5,
+        ..EncodingGains::identity()
+    };
+    assert_gain_paths_agree(
+        "PhaseEncoder",
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        sensitivity_gains,
+        &[&[0.0, 0.5, 1.0], &[1.0, f32::NAN, 0.25], &[0.75, 0.75, 0.0]],
+    );
+}
+
+#[test]
+fn gain_sink_path_advances_phase_exactly_like_the_returning_path() {
+    let gains = EncodingGains {
+        sensitivity_scale: 0.5,
+        ..EncodingGains::identity()
+    };
+    let mut encoder = PhaseEncoder::new(8, (0.0, 1.0));
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    encoder.encode_with_gains_into(&[0.5], gains, &mut buffer);
+    assert_eq!(encoder.current_phase(), 1);
+}
+
+#[test]
+fn stochastic_gain_sink_paths_hold_their_invariants() {
+    // Batch draws fresh entropy, so assert bounds and the documented silencing
+    // behavior rather than equality.
+    let mut rate = RateEncoder::try_new(5.0, 100.0, (0.0, 1.0), 0.010).expect("valid");
+    let mut population = PopulationEncoder::new(32, (0.0, 100.0), 10.0);
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    let boosted = EncodingGains {
+        firing_rate_scale: 2.0,
+        sensitivity_scale: 2.0,
+        ..EncodingGains::identity()
+    };
+    for _ in 0..16 {
+        buffer.clear();
+        rate.encode_with_gains_into(&[0.5; 16], boosted, &mut buffer);
+        assert!(buffer.len() <= 16);
+
+        buffer.clear();
+        population.encode_with_gains_into(&[50.0], boosted, &mut buffer);
+        assert!(buffer.len() <= 32);
+    }
+
+    // A zero scale silences both, on the sink path as on the returning one.
+    let silent = EncodingGains {
+        firing_rate_scale: 0.0,
+        sensitivity_scale: 0.0,
+        ..EncodingGains::identity()
+    };
+    buffer.clear();
+    rate.encode_with_gains_into(&[1.0; 16], silent, &mut buffer);
+    assert!(buffer.is_empty());
+    buffer.clear();
+    population.encode_with_gains_into(&[50.0], silent, &mut buffer);
+    assert!(buffer.is_empty());
+}
+
+#[test]
+fn batch_modulator_sink_path_matches_the_returning_path() {
+    let modulators = NeuroModulators {
+        acetylcholine: 1.0,
+        ..Default::default()
+    };
+    let curves = NeuromodulatorGainCurves {
+        acetylcholine: ModulatorGainCurves {
+            threshold: Some(GainCurve::new((0.0, 1.0), (1.0, 3.0))),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut returning = DeltaEncoder::new(0.1, 3);
+    let mut sink_based = DeltaEncoder::new(0.1, 3);
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for (index, input) in [[0.2_f32, 0.05, 0.5], [0.2, 0.05, 1.0]].iter().enumerate() {
+        let expected = returning
+            .encode_with_modulators(input, &modulators, &curves)
+            .spikes;
+
+        buffer.clear();
+        sink_based.encode_with_modulators_into(input, &modulators, &curves, &mut buffer);
+
+        assert_eq!(buffer, expected, "modulated batch step {index} diverged");
+    }
+}
+
+/// An out-of-crate modulated encoder that overrides no sink method.
+///
+/// Every `*_into` call on it therefore runs the inherited defaults on
+/// `Encoder` and `ModulatedEncoder`.
+struct ThresholdToy {
+    threshold: f32,
+}
+
+impl Encoder for ThresholdToy {
+    fn encode(&mut self, input: &[f32]) -> EncodedOutput {
+        <Self as ModulatedEncoder>::encode_with_gains(self, input, EncodingGains::identity())
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl ModulatedEncoder for ThresholdToy {
+    fn encode_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
+        let threshold = self.threshold * gains.sanitize().threshold_scale;
+        let mut output = EncodedOutput::new();
+        for (i, &value) in input.iter().enumerate() {
+            if value > threshold {
+                output
+                    .spikes
+                    .push(SpikeEvent::at_step_start(i as u16, true));
+            }
+        }
+        output
+    }
+}
+
+#[test]
+fn inherited_modulated_sink_defaults_work_for_out_of_crate_encoders() {
+    let doubled = EncodingGains {
+        threshold_scale: 2.0,
+        ..EncodingGains::identity()
+    };
+    let input = [0.4_f32, 0.9, 1.5];
+    let mut encoder = ThresholdToy { threshold: 0.5 };
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    // Gain defaults: threshold 0.5 * 2.0 = 1.0, so only channel 2 clears it.
+    encoder.encode_with_gains_into(&input, doubled, &mut buffer);
+    assert_eq!(buffer, vec![SpikeEvent::at_step_start(2, true)]);
+
+    buffer.clear();
+    encoder.encode_step_with_gains_into(&input, doubled, &mut buffer);
+    assert_eq!(buffer, vec![SpikeEvent::at_step_start(2, true)]);
+
+    // Modulator defaults: identity curves leave the threshold at 0.5.
+    let modulators = NeuroModulators::default();
+    let curves = NeuromodulatorGainCurves::default();
+    let unscaled = vec![
+        SpikeEvent::at_step_start(1, true),
+        SpikeEvent::at_step_start(2, true),
+    ];
+
+    buffer.clear();
+    encoder.encode_with_modulators_into(&input, &modulators, &curves, &mut buffer);
+    assert_eq!(buffer, unscaled);
+
+    buffer.clear();
+    encoder.encode_step_with_modulators_into(&input, &modulators, &curves, &mut buffer);
+    assert_eq!(buffer, unscaled);
+}
+
+// --- Chunked flushing --------------------------------------------------------
+
+#[test]
+fn chunked_flushing_delivers_every_spike_in_order() {
+    // The sink path buffers spikes internally and flushes them in runs. A spike
+    // count that straddles several run boundaries — and is not a multiple of
+    // one — must still arrive complete and in the returning path's order.
+    let channels = 205;
+    let mut encoder = LatencyEncoder::new(15, (0.0, 1.0));
+    let input: Vec<f32> = (0..channels)
+        .map(|i| i as f32 / (channels - 1) as f32)
+        .collect();
+
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+    encoder.encode_into(&input, &mut buffer);
+
+    assert_eq!(buffer.len(), channels);
+    assert_eq!(buffer, encoder.encode(&input).spikes);
+    assert!(
+        buffer
+            .iter()
+            .enumerate()
+            .all(|(i, spike)| spike.channel == i as u16),
+        "channels must stay in ascending order across flushes"
+    );
+}
+
+/// A sink that implements only `push`, inheriting the default `extend_from_slice`.
+#[derive(Default)]
+struct PushOnlySink(Vec<SpikeEvent>);
+
+impl SpikeSink for PushOnlySink {
+    fn push(&mut self, event: SpikeEvent) {
+        self.0.push(event);
+    }
+}
+
+/// A sink that overrides `extend_from_slice` and records the run lengths it saw.
+#[derive(Default)]
+struct RunRecordingSink {
+    spikes: Vec<SpikeEvent>,
+    runs: Vec<usize>,
+}
+
+impl SpikeSink for RunRecordingSink {
+    fn push(&mut self, event: SpikeEvent) {
+        self.spikes.push(event);
+        self.runs.push(1);
+    }
+
+    fn extend_from_slice(&mut self, events: &[SpikeEvent]) {
+        self.spikes.extend_from_slice(events);
+        self.runs.push(events.len());
+    }
+}
+
+#[test]
+fn custom_sinks_see_every_spike_whether_or_not_they_batch() {
+    let channels = 205;
+    let input: Vec<f32> = (0..channels)
+        .map(|i| i as f32 / (channels - 1) as f32)
+        .collect();
+
+    let expected = LatencyEncoder::new(15, (0.0, 1.0)).encode(&input).spikes;
+
+    let mut push_only = PushOnlySink::default();
+    LatencyEncoder::new(15, (0.0, 1.0)).encode_into(&input, &mut push_only);
+    assert_eq!(push_only.0, expected, "default extend_from_slice must agree");
+
+    let mut recording = RunRecordingSink::default();
+    LatencyEncoder::new(15, (0.0, 1.0)).encode_into(&input, &mut recording);
+    assert_eq!(recording.spikes, expected);
+    assert_eq!(
+        recording.runs.iter().sum::<usize>(),
+        channels,
+        "the recorded runs must account for every spike"
+    );
+    assert!(
+        recording.runs.len() < channels,
+        "spikes should arrive batched, not one call per spike"
+    );
 }

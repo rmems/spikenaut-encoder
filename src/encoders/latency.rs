@@ -126,7 +126,7 @@ impl LatencyEncoder {
     /// returning and sink-based APIs cannot drift apart. `latency` is the
     /// window this call places spikes in — `max_latency` unmodulated, the
     /// gain-scaled window otherwise.
-    fn encode_within_into(&self, input: &[f32], latency: u64, sink: &mut dyn SpikeSink) {
+    fn encode_within_into<S: SpikeSink + ?Sized>(&self, input: &[f32], latency: u64, sink: &mut S) {
         sink.reserve(input.len());
 
         for (channel, &value) in input.iter().enumerate() {
@@ -192,7 +192,9 @@ impl Encoder for LatencyEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_within_into(input, self.max_latency, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_within_into(input, self.max_latency, sink)
+        });
     }
 
     fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
@@ -230,7 +232,7 @@ impl ModulatedEncoder for LatencyEncoder {
         sink: &mut dyn SpikeSink,
     ) {
         let latency = self.scaled_latency(gains.sanitize().latency_scale);
-        self.encode_within_into(input, latency, sink);
+        crate::sink::through_chunks(sink, |sink| self.encode_within_into(input, latency, sink));
     }
 }
 

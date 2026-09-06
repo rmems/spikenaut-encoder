@@ -206,11 +206,11 @@ impl RateEncoder {
     ///
     /// Every public batch encoding path routes through here, so the returning
     /// and sink-based APIs cannot drift apart.
-    fn encode_with_rate_scale_into(
+    fn encode_with_rate_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         rate_scale: f32,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         if input.is_empty() {
             return;
@@ -264,11 +264,11 @@ impl RateEncoder {
         (f64::from(rate_hz) * f64::from(self.dt_seconds)).clamp(0.0, u64::MAX as f64)
     }
 
-    fn emit_capped_channel_spikes(
+    fn emit_capped_channel_spikes<S: SpikeSink + ?Sized>(
         &mut self,
         channel: u16,
         channel_idx: usize,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         let pending = self.pending_spikes[channel_idx];
         if pending == 0 {
@@ -297,11 +297,11 @@ impl RateEncoder {
     ///
     /// Allocation-free once the per-channel accumulators are sized, which
     /// happens on the first call for a given channel count.
-    fn encode_step_with_rate_scale_into(
+    fn encode_step_with_rate_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         rate_scale: f32,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         if input.is_empty() {
             return;
@@ -428,11 +428,15 @@ impl Encoder for RateEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_with_rate_scale_into(input, 1.0, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_rate_scale_into(input, 1.0, sink)
+        });
     }
 
     fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_step_with_rate_scale_into(input, 1.0, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_step_with_rate_scale_into(input, 1.0, sink)
+        });
     }
 
     /// One call is one tick, sized by `dt_seconds`.
@@ -476,7 +480,10 @@ impl ModulatedEncoder for RateEncoder {
         gains: EncodingGains,
         sink: &mut dyn SpikeSink,
     ) {
-        self.encode_with_rate_scale_into(input, gains.sanitize().firing_rate_scale, sink);
+        let rate_scale = gains.sanitize().firing_rate_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_rate_scale_into(input, rate_scale, sink)
+        });
     }
 
     fn encode_step_with_gains_into(
@@ -485,7 +492,10 @@ impl ModulatedEncoder for RateEncoder {
         gains: EncodingGains,
         sink: &mut dyn SpikeSink,
     ) {
-        self.encode_step_with_rate_scale_into(input, gains.sanitize().firing_rate_scale, sink);
+        let rate_scale = gains.sanitize().firing_rate_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_step_with_rate_scale_into(input, rate_scale, sink)
+        });
     }
 }
 

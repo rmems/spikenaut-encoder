@@ -85,7 +85,11 @@ impl DerivativeEncoder {
     ///
     /// Every public encoding path on this encoder routes through here, so the
     /// returning and sink-based APIs cannot drift apart.
-    fn encode_step_into_sink(&mut self, current_values: &[f32], sink: &mut dyn SpikeSink) {
+    fn encode_step_into_sink<S: SpikeSink + ?Sized>(
+        &mut self,
+        current_values: &[f32],
+        sink: &mut S,
+    ) {
         for (i, &current_val) in current_values.iter().enumerate() {
             if i >= self.thresholds.len() {
                 break;
@@ -125,11 +129,11 @@ impl Encoder for DerivativeEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_step_into_sink(input, sink);
+        crate::sink::through_chunks(sink, |sink| self.encode_step_into_sink(input, sink));
     }
 
     fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_step_into_sink(input, sink);
+        self.encode_into(input, sink);
     }
 
     /// One call is one tick; `encode` and `encode_step` are the same path.

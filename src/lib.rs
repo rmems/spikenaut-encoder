@@ -92,9 +92,7 @@ use types::EncodedOutput;
 /// crate override those methods to write into the sink directly.
 fn drain_spikes_into(output: EncodedOutput, sink: &mut dyn SpikeSink) {
     sink.reserve(output.spikes.len());
-    for spike in output.spikes {
-        sink.push(spike);
-    }
+    sink.extend_from_slice(&output.spikes);
 }
 
 /// Encoders that can apply neuromodulator-driven gain curves.

@@ -125,11 +125,11 @@ impl PopulationEncoder {
     ///
     /// Every public encoding path on this encoder routes through here, so the
     /// returning and sink-based APIs cannot drift apart.
-    fn encode_with_sensitivity_scale_into(
+    fn encode_with_sensitivity_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         sensitivity_scale: f32,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         // Zero/negative/non-finite sensitivity fully suppresses population responses.
         if !sensitivity_scale.is_finite() || sensitivity_scale <= 0.0 {
@@ -222,7 +222,9 @@ impl Encoder for PopulationEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_with_sensitivity_scale_into(input, 1.0, sink);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_sensitivity_scale_into(input, 1.0, sink)
+        });
     }
 
     fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
@@ -256,7 +258,10 @@ impl ModulatedEncoder for PopulationEncoder {
         gains: EncodingGains,
         sink: &mut dyn SpikeSink,
     ) {
-        self.encode_with_sensitivity_scale_into(input, gains.sanitize().sensitivity_scale, sink);
+        let sensitivity_scale = gains.sanitize().sensitivity_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_sensitivity_scale_into(input, sensitivity_scale, sink)
+        });
     }
 }
 

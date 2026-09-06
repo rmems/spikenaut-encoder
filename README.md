@@ -110,6 +110,12 @@ impl SpikeSink for EventQueue {
 }
 ```
 
+`SpikeSink` has a third, optional method — `extend_from_slice` — which defaults
+to `push` in a loop. Override it when your sink can take a slice more cheaply
+than repeated pushes; encoders deliver spikes through it in fixed-size runs, so
+writing through a trait object costs one virtual call per run rather than per
+spike.
+
 Encoders **append** to a sink and never clear it, so the caller decides where
 step boundaries are. The trait is object-safe, so `&mut dyn Encoder` and
 `&mut dyn ModulatedEncoder` still work; `ModulatedEncoder` has the matching

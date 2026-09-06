@@ -102,7 +102,7 @@ impl PhaseEncoder {
     /// the caller, exactly as in the returning paths. Every public encoding
     /// path on this encoder routes through here, so the returning and
     /// sink-based APIs cannot drift apart.
-    fn encode_current_cycle_into(&self, input: &[f32], sink: &mut dyn SpikeSink) {
+    fn encode_current_cycle_into<S: SpikeSink + ?Sized>(&self, input: &[f32], sink: &mut S) {
         for (channel, &value) in input.iter().enumerate() {
             // Non-finite inputs are invalid readings — skip rather than emit a
             // misleading phase-0 spike (NaN as u64 saturates to 0).
@@ -155,11 +155,11 @@ impl PhaseEncoder {
 
     /// Gain-scaled counterpart of
     /// [`encode_current_cycle_into`](Self::encode_current_cycle_into).
-    fn encode_current_cycle_with_sensitivity_scale_into(
+    fn encode_current_cycle_with_sensitivity_scale_into<S: SpikeSink + ?Sized>(
         &self,
         input: &[f32],
         sensitivity_scale: f32,
-        sink: &mut dyn SpikeSink,
+        sink: &mut S,
     ) {
         // Guard: zero or non-finite sensitivity collapses the range, suppressing all output.
         if !sensitivity_scale.is_finite() || sensitivity_scale <= 0.0 {
@@ -243,7 +243,7 @@ impl Encoder for PhaseEncoder {
     }
 
     fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
-        self.encode_current_cycle_into(input, sink);
+        crate::sink::through_chunks(sink, |sink| self.encode_current_cycle_into(input, sink));
         self.advance_phase();
     }
 
@@ -282,11 +282,10 @@ impl ModulatedEncoder for PhaseEncoder {
         gains: EncodingGains,
         sink: &mut dyn SpikeSink,
     ) {
-        self.encode_current_cycle_with_sensitivity_scale_into(
-            input,
-            gains.sanitize().sensitivity_scale,
-            sink,
-        );
+        let sensitivity_scale = gains.sanitize().sensitivity_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_current_cycle_with_sensitivity_scale_into(input, sensitivity_scale, sink)
+        });
         self.advance_phase();
     }
 }
