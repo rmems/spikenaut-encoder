@@ -64,6 +64,65 @@ fn main() {
 
 Full API docs: [docs.rs/axon-encoder](https://docs.rs/axon-encoder).
 
+## Reusing storage: `encode_into` and `SpikeSink`
+
+`encode` / `encode_step` allocate a fresh `Vec<SpikeEvent>` per call. That is
+the right default for exploration, but a runtime stepping thousands of channels
+wants one buffer, allocated once. `encode_into` / `encode_step_into` write into
+any `SpikeSink` you own instead:
+
+```rust
+use axon_encoder::prelude::*;
+
+fn main() {
+    let mut encoder = DeltaEncoder::try_new(0.1, 3).expect("valid DeltaEncoder");
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for step in [[0.5, 0.0, 0.0], [0.5, 0.9, 0.0]] {
+        buffer.clear(); // keeps the capacity, drops last step's spikes
+        encoder.encode_step_into(&step, &mut buffer);
+        println!("{} spikes", buffer.len());
+    }
+}
+```
+
+Same spikes, same order, same state advancement as the returning APIs — and
+zero allocations per step once the buffer is warm. `Vec<SpikeEvent>` and
+`EncodedOutput` implement `SpikeSink` out of the box; a downstream event
+buffer, ring queue, or hardware adapter implements the one-method trait itself
+and never materializes a `Vec` at all:
+
+```rust
+use axon_encoder::prelude::*;
+
+struct EventQueue {
+    events: Vec<(u16, u64)>,
+}
+
+impl SpikeSink for EventQueue {
+    fn push(&mut self, event: SpikeEvent) {
+        self.events.push((event.channel, event.timestamp.ticks()));
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.events.reserve(additional);
+    }
+}
+```
+
+`SpikeSink` has a third, optional method — `extend_from_slice` — which defaults
+to `push` in a loop. Override it when your sink can take a slice more cheaply
+than repeated pushes; encoders deliver spikes through it in fixed-size runs, so
+writing through a trait object costs one virtual call per run rather than per
+spike.
+
+Encoders **append** to a sink and never clear it, so the caller decides where
+step boundaries are. The trait is object-safe, so `&mut dyn Encoder` and
+`&mut dyn ModulatedEncoder` still work; `ModulatedEncoder` has the matching
+`encode_with_gains_into` / `encode_with_modulators_into`. `PoissonEncoder` and
+`EmbeddingRateEncoder` are documented exceptions — neither implements
+`Encoder`. See `cargo run --example encode_into_sink`.
+
 ## Spike time semantics
 
 Every encoder here shares **one time model**, so a consumer can integrate any of
@@ -194,6 +253,8 @@ exception: its `new(...)` already returns a `Result`.
   - **`PoissonEncoder`** — Poisson-process style sampling
 - **`Encoder` / `ModulatedEncoder` traits** — plug in custom encoders or apply
   gain scales (`EncodingGains`) without owning a full neuromodulator runtime
+- **`SpikeSink` + `encode_into`** — write spikes into caller-owned storage and
+  reuse one buffer across steps, or translate straight into your own event type
 - **Optional `ndarray` helpers** — `NdarrayEncoderExt` for view-based batch input
 - **Small dependency surface** — easy to embed in larger systems
 
@@ -223,6 +284,7 @@ Clone the repository and run:
 cargo run --example rate_encoding
 cargo run --example delta_encoding
 cargo run --example spike_timebase
+cargo run --example encode_into_sink
 cargo run --example ndarray_encoding --features ndarray
 ```
 

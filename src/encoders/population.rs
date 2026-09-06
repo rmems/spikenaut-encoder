@@ -121,15 +121,19 @@ impl PopulationEncoder {
         self.tuning_width.max(f32::EPSILON)
     }
 
-    fn encode_with_sensitivity_scale(
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public encoding path on this encoder routes through here, so the
+    /// returning and sink-based APIs cannot drift apart.
+    fn encode_with_sensitivity_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         sensitivity_scale: f32,
-    ) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
+        sink: &mut S,
+    ) {
         // Zero/negative/non-finite sensitivity fully suppresses population responses.
         if !sensitivity_scale.is_finite() || sensitivity_scale <= 0.0 {
-            return output;
+            return;
         }
         let tuning_width = self.effective_tuning_width(sensitivity_scale);
         // Rate gain: scales > 1 also narrow width; scales in (0, 1) only reduce rate
@@ -146,10 +150,19 @@ impl PopulationEncoder {
                 };
                 let rate = self.get_rate_with_tuning_width(value, i, tuning_width) * rate_gain;
                 if crate::rng::gen_unit_f32_with_rng(&mut rng) < rate {
-                    output.spikes.push(SpikeEvent::at_step_start(channel, true));
+                    sink.push(SpikeEvent::at_step_start(channel, true));
                 }
             }
         }
+    }
+
+    fn encode_with_sensitivity_scale(
+        &mut self,
+        input: &[f32],
+        sensitivity_scale: f32,
+    ) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_with_sensitivity_scale_into(input, sensitivity_scale, &mut output.spikes);
         output
     }
 
@@ -208,6 +221,16 @@ impl Encoder for PopulationEncoder {
         self.encode(input)
     }
 
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_sensitivity_scale_into(input, 1.0, sink)
+        });
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_into(input, sink);
+    }
+
     /// One call is one tick; batch and streaming are identical here.
     ///
     /// Each tuned neuron independently emits at most one spike per call, all at
@@ -227,6 +250,34 @@ impl Encoder for PopulationEncoder {
 impl ModulatedEncoder for PopulationEncoder {
     fn encode_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
         self.encode_with_sensitivity_scale(input, gains.sanitize().sensitivity_scale)
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        let sensitivity_scale = gains.sanitize().sensitivity_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_sensitivity_scale_into(input, sensitivity_scale, sink)
+        });
+    }
+
+    /// Mirrors [`encode_step_with_gains`], which this encoder leaves at its
+    /// default of [`encode_with_gains`]. Without this the trait default would
+    /// build and drain an intermediate `EncodedOutput`, so the streaming
+    /// modulated path would allocate on every step.
+    ///
+    /// [`encode_step_with_gains`]: ModulatedEncoder::encode_step_with_gains
+    /// [`encode_with_gains`]: ModulatedEncoder::encode_with_gains
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_gains_into(input, gains, sink);
     }
 }
 

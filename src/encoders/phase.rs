@@ -96,9 +96,13 @@ impl PhaseEncoder {
         ((normalized * self.cycle_steps as f64).floor() as u64).min(self.cycle_steps - 1)
     }
 
-    fn encode_current_cycle(&self, input: &[f32]) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
-
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Emits the current cycle only — advancing the background phase stays with
+    /// the caller, exactly as in the returning paths. Every public encoding
+    /// path on this encoder routes through here, so the returning and
+    /// sink-based APIs cannot drift apart.
+    fn encode_current_cycle_into<S: SpikeSink + ?Sized>(&self, input: &[f32], sink: &mut S) {
         for (channel, &value) in input.iter().enumerate() {
             // Non-finite inputs are invalid readings — skip rather than emit a
             // misleading phase-0 spike (NaN as u64 saturates to 0).
@@ -114,11 +118,13 @@ impl PhaseEncoder {
             // Call-relative phase offset: absolute phase time is the caller's
             // cursor origin plus this offset (see the crate time contract).
             let phase_offset = self.phase_offset(self.normalize(value));
-            output
-                .spikes
-                .push(SpikeEvent::new(channel_u16, phase_offset, true));
+            sink.push(SpikeEvent::new(channel_u16, phase_offset, true));
         }
+    }
 
+    fn encode_current_cycle(&self, input: &[f32]) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_current_cycle_into(input, &mut output.spikes);
         output
     }
 
@@ -147,16 +153,17 @@ impl PhaseEncoder {
         self.cycle_steps
     }
 
-    fn encode_current_cycle_with_sensitivity_scale(
+    /// Gain-scaled counterpart of
+    /// [`encode_current_cycle_into`](Self::encode_current_cycle_into).
+    fn encode_current_cycle_with_sensitivity_scale_into<S: SpikeSink + ?Sized>(
         &self,
         input: &[f32],
         sensitivity_scale: f32,
-    ) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
-
+        sink: &mut S,
+    ) {
         // Guard: zero or non-finite sensitivity collapses the range, suppressing all output.
         if !sensitivity_scale.is_finite() || sensitivity_scale <= 0.0 {
-            return output;
+            return;
         }
 
         // Use f64 to prevent overflow for valid f32 ranges and scales.
@@ -174,11 +181,21 @@ impl PhaseEncoder {
 
             let normalized = ((value as f64 - lo) / (hi - lo)).clamp(0.0, 1.0);
             let phase_offset = self.phase_offset(normalized);
-            output
-                .spikes
-                .push(SpikeEvent::new(channel_u16, phase_offset, true));
+            sink.push(SpikeEvent::new(channel_u16, phase_offset, true));
         }
+    }
 
+    fn encode_current_cycle_with_sensitivity_scale(
+        &self,
+        input: &[f32],
+        sensitivity_scale: f32,
+    ) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_current_cycle_with_sensitivity_scale_into(
+            input,
+            sensitivity_scale,
+            &mut output.spikes,
+        );
         output
     }
 
@@ -225,6 +242,15 @@ impl Encoder for PhaseEncoder {
         output
     }
 
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        crate::sink::through_chunks(sink, |sink| self.encode_current_cycle_into(input, sink));
+        self.advance_phase();
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_into(input, sink);
+    }
+
     /// An overlapping model: one tick of oscillation per call, `cycle_steps` of
     /// reach.
     ///
@@ -248,6 +274,35 @@ impl ModulatedEncoder for PhaseEncoder {
             .encode_current_cycle_with_sensitivity_scale(input, gains.sanitize().sensitivity_scale);
         self.advance_phase();
         output
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        let sensitivity_scale = gains.sanitize().sensitivity_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_current_cycle_with_sensitivity_scale_into(input, sensitivity_scale, sink)
+        });
+        self.advance_phase();
+    }
+
+    /// Mirrors [`encode_step_with_gains`], which this encoder leaves at its
+    /// default of [`encode_with_gains`]. Without this the trait default would
+    /// build and drain an intermediate `EncodedOutput`, so the streaming
+    /// modulated path would allocate on every step.
+    ///
+    /// [`encode_step_with_gains`]: ModulatedEncoder::encode_step_with_gains
+    /// [`encode_with_gains`]: ModulatedEncoder::encode_with_gains
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_gains_into(input, gains, sink);
     }
 }
 

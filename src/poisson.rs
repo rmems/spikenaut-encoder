@@ -27,6 +27,17 @@
 /// the input is a single probability (0.0 to 1.0) and the output is a spike train
 /// over multiple time steps.
 ///
+/// # No `SpikeSink` path
+///
+/// For the same reason, `PoissonEncoder` has **no** `encode_into` — it is an
+/// explicit exception to the crate's allocation-reusing
+/// [`SpikeSink`](crate::sink::SpikeSink) path. It emits a dense per-step
+/// bitmap, not [`SpikeEvent`](crate::types::SpikeEvent)s, so there is nothing
+/// for a spike sink to receive: the sample index carries the timing and no
+/// channel identity exists. A caller that wants events can walk the returned
+/// train and push its own [`SpikeEvent`](crate::types::SpikeEvent)s into a
+/// sink; a caller that wants to reuse storage should reuse the `Vec<u8>`.
+///
 /// # Examples
 ///
 /// ```rust

@@ -170,12 +170,16 @@ impl PredictiveEncoder {
         })
     }
 
-    fn encode_with_threshold_scale(
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public encoding path on this encoder routes through here, so the
+    /// returning and sink-based APIs cannot drift apart.
+    fn encode_with_threshold_scale_into<S: SpikeSink + ?Sized>(
         &mut self,
         input: &[f32],
         threshold_scale: f32,
-    ) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
+        sink: &mut S,
+    ) {
         for (i, &value) in input.iter().enumerate() {
             if i >= self.history.len() {
                 break;
@@ -202,9 +206,7 @@ impl PredictiveEncoder {
                     let Ok(channel) = u16::try_from(i) else {
                         break;
                     };
-                    output
-                        .spikes
-                        .push(SpikeEvent::at_step_start(channel, error >= 0.0));
+                    sink.push(SpikeEvent::at_step_start(channel, error >= 0.0));
                     break;
                 }
             }
@@ -217,7 +219,25 @@ impl PredictiveEncoder {
             let recent_avg = channel_history.iter().rev().take(5).sum::<f32>() / 5.0;
             self.thresholds[i] = 0.9 * self.thresholds[i] + 0.1 * recent_avg;
         }
+    }
+
+    fn encode_with_threshold_scale(
+        &mut self,
+        input: &[f32],
+        threshold_scale: f32,
+    ) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_with_threshold_scale_into(input, threshold_scale, &mut output.spikes);
         output
+    }
+
+    /// Streaming inputs are truncated to the configured channel count.
+    fn clamp_to_channels<'a>(&self, input: &'a [f32]) -> &'a [f32] {
+        if input.len() > self.history.len() {
+            &input[..self.history.len()]
+        } else {
+            input
+        }
     }
 
     /// Encodes input using neuromodulator-driven gain curves.
@@ -254,12 +274,21 @@ impl Encoder for PredictiveEncoder {
     }
 
     fn encode_step(&mut self, input: &[f32]) -> EncodedOutput {
-        let safe_input = if input.len() > self.history.len() {
-            &input[..self.history.len()]
-        } else {
-            input
-        };
+        let safe_input = self.clamp_to_channels(input);
         self.encode_with_threshold_scale(safe_input, 1.0)
+    }
+
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(input, 1.0, sink)
+        });
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        let safe_input = self.clamp_to_channels(input);
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(safe_input, 1.0, sink)
+        });
     }
 
     /// One call is one tick; batch and streaming are identical here.
@@ -284,12 +313,37 @@ impl Encoder for PredictiveEncoder {
 
 impl ModulatedEncoder for PredictiveEncoder {
     fn encode_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
-        let safe_input = if input.len() > self.history.len() {
-            &input[..self.history.len()]
-        } else {
-            input
-        };
+        let safe_input = self.clamp_to_channels(input);
         self.encode_with_threshold_scale(safe_input, gains.sanitize().threshold_scale)
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        let safe_input = self.clamp_to_channels(input);
+        let threshold_scale = gains.sanitize().threshold_scale;
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_with_threshold_scale_into(safe_input, threshold_scale, sink)
+        });
+    }
+
+    /// Mirrors [`encode_step_with_gains`], which this encoder leaves at its
+    /// default of [`encode_with_gains`]. Without this the trait default would
+    /// build and drain an intermediate `EncodedOutput`, so the streaming
+    /// modulated path would allocate on every step.
+    ///
+    /// [`encode_step_with_gains`]: ModulatedEncoder::encode_step_with_gains
+    /// [`encode_with_gains`]: ModulatedEncoder::encode_with_gains
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_gains_into(input, gains, sink);
     }
 }
 

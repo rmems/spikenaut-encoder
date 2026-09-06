@@ -98,50 +98,60 @@ impl LatencyEncoder {
         TickOffset::new(ticks.min(latency))
     }
 
-    fn timestamp_for(&self, value: f32) -> TickOffset {
-        if self.max_latency == 0 {
+    /// Places `value` inside a window of `latency` ticks: strong early, weak late.
+    fn timestamp_within(&self, value: f32, latency: u64) -> TickOffset {
+        if latency == 0 {
             return TickOffset::ZERO;
         }
         if value.is_nan() {
-            return TickOffset::new(self.max_latency);
+            return TickOffset::new(latency);
         }
 
         let normalized = self.normalize(value);
-        Self::offset_within(self.max_latency, 1.0 - normalized)
+        Self::offset_within(latency, 1.0 - normalized)
     }
 
-    fn timestamp_for_with_latency_scale(&self, value: f32, latency_scale: f32) -> TickOffset {
-        // Clamp to `max_latency` so a gain above 1.0 cannot push a spike past
-        // the configured window — `time_model().span_ticks()` is a hard bound.
-        let scaled_latency = ((self.max_latency as f64) * (latency_scale as f64)).round() as u64;
-        let scaled_latency = scaled_latency.min(self.max_latency);
-        if scaled_latency == 0 {
-            return TickOffset::ZERO;
-        }
-        if value.is_nan() {
-            return TickOffset::new(scaled_latency);
-        }
-
-        let normalized = self.normalize(value);
-        Self::offset_within(scaled_latency, 1.0 - normalized)
+    /// The gain-scaled window, clamped to `max_latency`.
+    ///
+    /// A gain above 1.0 must not push a spike past the configured window —
+    /// `time_model().span_ticks()` is a hard bound.
+    fn scaled_latency(&self, latency_scale: f32) -> u64 {
+        let scaled = ((self.max_latency as f64) * (latency_scale as f64)).round() as u64;
+        scaled.min(self.max_latency)
     }
 
-    fn encode_with_latency_scale(&mut self, input: &[f32], latency_scale: f32) -> EncodedOutput {
-        let mut output = EncodedOutput::new();
-        output.spikes.reserve(input.len());
+    /// Spike-emitting core: writes straight into `sink`, allocating nothing.
+    ///
+    /// Every public encoding path on this encoder routes through here, so the
+    /// returning and sink-based APIs cannot drift apart. `latency` is the
+    /// window this call places spikes in — `max_latency` unmodulated, the
+    /// gain-scaled window otherwise.
+    fn encode_within_into<S: SpikeSink + ?Sized>(&self, input: &[f32], latency: u64, sink: &mut S) {
+        // The loop stops at `u16::MAX`, so a longer input cannot produce more
+        // spikes than that. Hinting `input.len()` would make an oversized slice
+        // pre-allocate storage the encoder can never fill.
+        sink.reserve(input.len().min(usize::from(u16::MAX) + 1));
 
         for (channel, &value) in input.iter().enumerate() {
             let Ok(channel) = u16::try_from(channel) else {
                 // Remaining channels exceed u16::MAX; stop rather than wrap.
                 break;
             };
-            output.spikes.push(SpikeEvent::new(
+            sink.push(SpikeEvent::new(
                 channel,
-                self.timestamp_for_with_latency_scale(value, latency_scale),
+                self.timestamp_within(value, latency),
                 true,
             ));
         }
+    }
 
+    fn encode_with_latency_scale(&mut self, input: &[f32], latency_scale: f32) -> EncodedOutput {
+        let mut output = EncodedOutput::new();
+        self.encode_within_into(
+            input,
+            self.scaled_latency(latency_scale),
+            &mut output.spikes,
+        );
         output
     }
 
@@ -176,23 +186,22 @@ impl LatencyEncoder {
 impl Encoder for LatencyEncoder {
     fn encode(&mut self, input: &[f32]) -> EncodedOutput {
         let mut output = EncodedOutput::new();
-        output.spikes.reserve(input.len());
-
-        for (channel, &value) in input.iter().enumerate() {
-            let Ok(channel) = u16::try_from(channel) else {
-                // Remaining channels exceed u16::MAX; stop rather than wrap.
-                break;
-            };
-            output
-                .spikes
-                .push(SpikeEvent::new(channel, self.timestamp_for(value), true));
-        }
-
+        self.encode_within_into(input, self.max_latency, &mut output.spikes);
         output
     }
 
     fn encode_step(&mut self, input: &[f32]) -> EncodedOutput {
         self.encode(input)
+    }
+
+    fn encode_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        crate::sink::through_chunks(sink, |sink| {
+            self.encode_within_into(input, self.max_latency, sink)
+        });
+    }
+
+    fn encode_step_into(&mut self, input: &[f32], sink: &mut dyn SpikeSink) {
+        self.encode_into(input, sink);
     }
 
     /// A non-overlapping presentation window of `max_latency + 1` ticks.
@@ -217,6 +226,32 @@ impl Encoder for LatencyEncoder {
 impl ModulatedEncoder for LatencyEncoder {
     fn encode_with_gains(&mut self, input: &[f32], gains: EncodingGains) -> EncodedOutput {
         self.encode_with_latency_scale(input, gains.sanitize().latency_scale)
+    }
+
+    fn encode_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        let latency = self.scaled_latency(gains.sanitize().latency_scale);
+        crate::sink::through_chunks(sink, |sink| self.encode_within_into(input, latency, sink));
+    }
+
+    /// Mirrors [`encode_step_with_gains`], which this encoder leaves at its
+    /// default of [`encode_with_gains`]. Without this the trait default would
+    /// build and drain an intermediate `EncodedOutput`, so the streaming
+    /// modulated path would allocate on every step.
+    ///
+    /// [`encode_step_with_gains`]: ModulatedEncoder::encode_step_with_gains
+    /// [`encode_with_gains`]: ModulatedEncoder::encode_with_gains
+    fn encode_step_with_gains_into(
+        &mut self,
+        input: &[f32],
+        gains: EncodingGains,
+        sink: &mut dyn SpikeSink,
+    ) {
+        self.encode_with_gains_into(input, gains, sink);
     }
 }
 
