@@ -100,6 +100,18 @@ fn measure_operation<T>(operation: impl FnOnce() -> T) -> AllocationStats {
     }
 }
 
+/// Measures a returning-path call and records how many spikes it produced.
+fn measure_encode(operation: impl FnOnce() -> EncodedOutput) -> AllocationStats {
+    let mut spikes = 0;
+    let mut stats = measure_operation(|| {
+        let output = operation();
+        spikes = output.spikes.len();
+        output
+    });
+    stats.spikes = spikes;
+    stats
+}
+
 fn print_stats(
     encoder: &str,
     operation: &str,
@@ -144,7 +156,7 @@ fn report_rate_encoder() {
         let input = normalized_input(scale);
         encoder.encode_step(&input);
 
-        let stats = measure_operation(|| encoder.encode_step(&input));
+        let stats = measure_encode(|| encoder.encode_step(&input));
         print_stats("RateEncoder", "encode_step", "scale", scale, stats);
     }
 }
@@ -155,7 +167,7 @@ fn report_population_encoder() {
             .expect("valid PopulationEncoder");
         let input = [75.0_f32];
 
-        let stats = measure_operation(|| encoder.encode(&input));
+        let stats = measure_encode(|| encoder.encode(&input));
         print_stats("PopulationEncoder", "encode", "neurons", neurons, stats);
     }
 }
@@ -167,7 +179,7 @@ fn report_delta_encoder() {
         let shifted = shifted_input(scale, 0.25);
         encoder.encode_step(&baseline);
 
-        let stats = measure_operation(|| encoder.encode_step(&shifted));
+        let stats = measure_encode(|| encoder.encode_step(&shifted));
         print_stats("DeltaEncoder", "encode_step", "scale", scale, stats);
     }
 }
@@ -183,7 +195,7 @@ fn report_temporal_encoder() {
             encoder.encode_step(input);
         }
 
-        let stats = measure_operation(|| encoder.encode_step(&high));
+        let stats = measure_encode(|| encoder.encode_step(&high));
         print_stats("TemporalEncoder", "encode_step", "scale", scale, stats);
     }
 }
@@ -199,7 +211,7 @@ fn report_predictive_encoder() {
             encoder.encode_step(&low);
         }
 
-        let stats = measure_operation(|| encoder.encode_step(&high));
+        let stats = measure_encode(|| encoder.encode_step(&high));
         print_stats("PredictiveEncoder", "encode_step", "scale", scale, stats);
     }
 }
@@ -210,7 +222,7 @@ fn report_latency_encoder() {
         let input = normalized_input(scale);
         encoder.encode_step(&input);
 
-        let stats = measure_operation(|| encoder.encode_step(&input));
+        let stats = measure_encode(|| encoder.encode_step(&input));
         print_stats("LatencyEncoder", "encode_step", "scale", scale, stats);
     }
 }
@@ -340,10 +352,42 @@ fn report_latency_encoder_into() {
     }
 }
 
+/// Backlog drain on the returning path.
+///
+/// A rate high enough to queue more than `MAX_SPIKES_PER_CHANNEL_PER_STEP`
+/// makes one channel emit a long run of coincident spikes in a single step.
+/// That run is the case where a capacity hint earns its keep, and no other row
+/// exercises it.
+fn report_rate_encoder_backlog() {
+    // The drain is per channel and always hits the same cap, so this does not
+    // vary with the channel-count scales; report it once at its real width.
+    const CHANNELS: usize = 8;
+
+    let mut encoder =
+        RateEncoder::try_new(0.0, 100_000.0, (0.0, 1.0), 0.1).expect("valid RateEncoder");
+    let input = constant_input(CHANNELS, 1.0);
+    encoder.encode_step(&input);
+
+    let stats = measure_encode(|| encoder.encode_step(&input));
+    print_stats(
+        "RateEncoder",
+        "encode_step(backlog)",
+        "channels",
+        CHANNELS,
+        stats,
+    );
+}
+
 fn report_poisson_encoder() {
     for steps in POISSON_STEPS {
         let encoder = PoissonEncoder::new(steps);
-        let stats = measure_operation(|| encoder.encode(0.5));
+        let mut fired = 0;
+        let mut stats = measure_operation(|| {
+            let train = encoder.encode(0.5);
+            fired = train.iter().filter(|&&bit| bit == 1).count();
+            train
+        });
+        stats.spikes = fired;
         print_stats("PoissonEncoder", "encode", "steps", steps, stats);
     }
 }
@@ -356,6 +400,7 @@ fn main() {
     report_temporal_encoder();
     report_predictive_encoder();
     report_latency_encoder();
+    report_rate_encoder_backlog();
     // Reusable-storage counterparts: same encoders, same scales, one buffer.
     report_rate_encoder_into();
     report_population_encoder_into();

@@ -275,9 +275,15 @@ impl RateEncoder {
             return;
         }
         let emit = pending.min(Self::MAX_SPIKES_PER_CHANNEL_PER_STEP as u64) as usize;
-        // No `reserve` hint here: it would fire once per channel for a gain
-        // that is already known from the backlog, and buffered flushing on the
-        // sink path batches these pushes anyway.
+        if emit > 1 {
+            // A drained backlog is a long run of coincident spikes, and `emit`
+            // is exactly how many. Worth one hint: without it the returning
+            // path, which pushes straight into a `Vec`, grows it geometrically
+            // across the run. The common single-spike case skips the call, and
+            // on the sink path this reaches the caller's sink through the chunk
+            // adapter, so it pre-sizes their storage too.
+            sink.reserve(emit);
+        }
         // Coincident repeats: contiguous, same offset, mutually unordered — the
         // run length is this channel's spike count for the step.
         for _ in 0..emit {
