@@ -211,7 +211,7 @@ fn bench_rate_encoder_step_into(c: &mut Criterion) {
                 RateEncoder::try_new(5.0, 100.0, (0.0, 1.0), RateEncoder::DEFAULT_DT_SECONDS)
                     .expect("valid RateEncoder");
             let input = normalized_input(size);
-            let mut buffer = Vec::new();
+            let mut buffer = Vec::with_capacity(size);
             encoder.encode_step_into(&input, &mut buffer);
 
             b.iter(|| {
@@ -234,7 +234,8 @@ fn bench_population_encoder_into(c: &mut Criterion) {
                 let mut encoder = PopulationEncoder::try_new(neurons, (50.0, 100.0), 10.0)
                     .expect("valid PopulationEncoder");
                 let input = [75.0_f32];
-                let mut buffer = Vec::new();
+                // Up to `neurons` spikes fire, and the count varies per call.
+                let mut buffer = Vec::with_capacity(neurons);
                 encoder.encode_into(&input, &mut buffer);
 
                 b.iter(|| {
@@ -256,7 +257,7 @@ fn bench_delta_encoder_step_into(c: &mut Criterion) {
             let baseline = normalized_input(size);
             let shifted = shifted_input(size, 0.25);
             let mut use_shifted = true;
-            let mut buffer = Vec::new();
+            let mut buffer = Vec::with_capacity(size);
 
             encoder.encode_step_into(&baseline, &mut buffer);
 
@@ -282,7 +283,7 @@ fn bench_temporal_encoder_step_into(c: &mut Criterion) {
             let high = temporal_level(size, 1.0);
             let sequence = [&low, &low, &low, &high, &high, &high];
             let mut index = 0usize;
-            let mut buffer = Vec::new();
+            let mut buffer = Vec::with_capacity(size);
 
             for input in sequence {
                 encoder.encode_step_into(input, &mut buffer);
@@ -311,7 +312,7 @@ fn bench_predictive_encoder_step_into(c: &mut Criterion) {
             let high = temporal_level(size, 1.0);
             let sequence = [&low, &low, &low, &high, &high, &high];
             let mut index = 0usize;
-            let mut buffer = Vec::new();
+            let mut buffer = Vec::with_capacity(size);
 
             for _ in 0..5 {
                 encoder.encode_step_into(&low, &mut buffer);
@@ -352,7 +353,7 @@ fn bench_latency_encoder_into(c: &mut Criterion) {
             let mut encoder =
                 LatencyEncoder::try_new(15, (0.0, 1.0)).expect("valid LatencyEncoder");
             let input = normalized_input(size);
-            let mut buffer = Vec::new();
+            let mut buffer = Vec::with_capacity(size);
             encoder.encode_into(&input, &mut buffer);
 
             b.iter(|| {

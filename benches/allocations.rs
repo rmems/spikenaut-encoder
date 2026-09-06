@@ -213,7 +213,9 @@ fn report_rate_encoder_into() {
             RateEncoder::try_new(5.0, 100.0, (0.0, 1.0), RateEncoder::DEFAULT_DT_SECONDS)
                 .expect("valid RateEncoder");
         let input = normalized_input(scale);
-        let mut buffer = Vec::new();
+        // Pre-sized like a real caller would: a stochastic spike count must not
+        // grow the buffer inside the measured step.
+        let mut buffer = Vec::with_capacity(scale);
 
         let stats = measure_reused_step(2, &mut buffer, |sink| {
             encoder.encode_step_into(&input, sink);
@@ -227,7 +229,8 @@ fn report_population_encoder_into() {
         let mut encoder = PopulationEncoder::try_new(neurons, (50.0, 100.0), 10.0)
             .expect("valid PopulationEncoder");
         let input = [75.0_f32];
-        let mut buffer = Vec::new();
+        // Up to `neurons` spikes can fire, and the count varies per call.
+        let mut buffer = Vec::with_capacity(neurons);
 
         let stats = measure_reused_step(2, &mut buffer, |sink| {
             encoder.encode_into(&input, sink);
@@ -248,7 +251,7 @@ fn report_delta_encoder_into() {
         let baseline = normalized_input(scale);
         let shifted = shifted_input(scale, 0.25);
         let mut use_shifted = true;
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(scale);
 
         // Alternating inputs keep every channel crossing the threshold, so the
         // measured step emits a full-width burst rather than settling silent.
@@ -267,7 +270,7 @@ fn report_temporal_encoder_into() {
             TemporalEncoder::try_new(6, vec![(0.2, 1)], scale).expect("valid TemporalEncoder");
         let low = constant_input(scale, 0.0);
         let high = constant_input(scale, 1.0);
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(scale);
 
         for input in [&low, &low, &low, &high, &high, &high] {
             encoder.encode_step(input);
@@ -286,7 +289,7 @@ fn report_predictive_encoder_into() {
             PredictiveEncoder::try_new(5, vec![(0.2, 1)], scale).expect("valid PredictiveEncoder");
         let low = constant_input(scale, 0.0);
         let high = constant_input(scale, 1.0);
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(scale);
 
         for _ in 0..5 {
             encoder.encode_step(&low);
@@ -309,7 +312,7 @@ fn report_latency_encoder_into() {
     for scale in SCALES {
         let mut encoder = LatencyEncoder::try_new(15, (0.0, 1.0)).expect("valid LatencyEncoder");
         let input = normalized_input(scale);
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(scale);
 
         let stats = measure_reused_step(2, &mut buffer, |sink| {
             encoder.encode_step_into(&input, sink);

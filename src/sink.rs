@@ -234,12 +234,9 @@ impl SpikeSink for Chunked<'_> {
         self.sink.reserve(additional);
     }
 
-    fn extend_from_slice(&mut self, events: &[SpikeEvent]) {
-        // Already a run: keep ordering by flushing first, then pass it through
-        // rather than re-buffering it.
-        self.flush();
-        self.sink.extend_from_slice(events);
-    }
+    // `extend_from_slice` is deliberately left at the default: encoders emit one
+    // spike at a time, so nothing calls it here, and the inherited `push` loop
+    // stays correct if that ever changes.
 }
 
 impl Drop for Chunked<'_> {
@@ -316,15 +313,15 @@ mod tests {
         // Method calls on `&mut dyn SpikeSink` go straight through the vtable,
         // so only a by-value generic bound exercises the `&mut S` impl itself.
         fn feed<S: SpikeSink>(mut sink: S) {
-            sink.reserve(2);
+            sink.reserve(3);
             sink.push(spike(1));
-            sink.push(spike(2));
+            sink.extend_from_slice(&[spike(2), spike(3)]);
         }
 
         let mut buffer: Vec<SpikeEvent> = Vec::new();
         feed(&mut buffer);
-        assert_eq!(buffer, vec![spike(1), spike(2)]);
-        assert!(buffer.capacity() >= 2);
+        assert_eq!(buffer, vec![spike(1), spike(2), spike(3)]);
+        assert!(buffer.capacity() >= 3);
     }
 
     #[test]

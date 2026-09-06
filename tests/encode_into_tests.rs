@@ -214,7 +214,13 @@ fn rate_encoder_batch_sink_path_preserves_structural_invariants() {
 fn rate_encoder_batch_sink_path_matches_returning_path_on_average() {
     // Statistical equivalence: identical configuration, so the expected spike
     // count per call must agree well within sampling noise over many trials.
-    const TRIALS: usize = 400;
+    //
+    // Each call draws 64 independent channels at p ~= 0.41, so a single call
+    // has a standard deviation near 3.9 spikes. Over TRIALS calls the
+    // difference of the two means has a standard error near 3.9 * sqrt(2) /
+    // sqrt(TRIALS); at 1,600 that puts the one-spike bound past seven sigma,
+    // which keeps a correct implementation from failing intermittently.
+    const TRIALS: usize = 1_600;
     let input: Vec<f32> = vec![0.5; 64];
 
     let mut returning = RateEncoder::try_new(5.0, 100.0, (0.0, 1.0), 0.010).expect("valid");
@@ -263,7 +269,9 @@ fn population_encoder_sink_path_preserves_structural_invariants() {
 
 #[test]
 fn population_encoder_sink_path_matches_returning_path_on_average() {
-    const TRIALS: usize = 400;
+    // Same sampling argument as the rate encoder above: 64 independent neurons
+    // per call, so 1,600 trials keep the one-spike bound many sigma wide.
+    const TRIALS: usize = 1_600;
     let mut returning = PopulationEncoder::new(64, (0.0, 100.0), 10.0);
     let mut sink_based = PopulationEncoder::new(64, (0.0, 100.0), 10.0);
     let mut buffer: Vec<SpikeEvent> = Vec::new();
@@ -816,7 +824,10 @@ fn custom_sinks_see_every_spike_whether_or_not_they_batch() {
 
     let mut push_only = PushOnlySink::default();
     LatencyEncoder::new(15, (0.0, 1.0)).encode_into(&input, &mut push_only);
-    assert_eq!(push_only.0, expected, "default extend_from_slice must agree");
+    assert_eq!(
+        push_only.0, expected,
+        "default extend_from_slice must agree"
+    );
 
     let mut recording = RunRecordingSink::default();
     LatencyEncoder::new(15, (0.0, 1.0)).encode_into(&input, &mut recording);

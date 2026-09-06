@@ -127,7 +127,10 @@ impl LatencyEncoder {
     /// window this call places spikes in — `max_latency` unmodulated, the
     /// gain-scaled window otherwise.
     fn encode_within_into<S: SpikeSink + ?Sized>(&self, input: &[f32], latency: u64, sink: &mut S) {
-        sink.reserve(input.len());
+        // The loop stops at `u16::MAX`, so a longer input cannot produce more
+        // spikes than that. Hinting `input.len()` would make an oversized slice
+        // pre-allocate storage the encoder can never fill.
+        sink.reserve(input.len().min(usize::from(u16::MAX) + 1));
 
         for (channel, &value) in input.iter().enumerate() {
             let Ok(channel) = u16::try_from(channel) else {

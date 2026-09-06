@@ -210,6 +210,18 @@ pub trait ModulatedEncoder: Encoder {
 
     /// Neuromodulated [`encode_with_gains_into`](Self::encode_with_gains_into):
     /// evaluates `gain_curves` against `modulators`, then writes into `sink`.
+    ///
+    /// # Overriding
+    ///
+    /// This mirrors the **gains** layer, not the modulator layer: it evaluates
+    /// the curves and delegates to `encode_with_gains_into`, exactly as
+    /// [`encode_with_modulators`](Self::encode_with_modulators) evaluates them
+    /// and delegates to [`encode_with_gains`](Self::encode_with_gains).
+    /// Overriding `encode_with_gains` / `encode_with_gains_into` — the intended
+    /// extension point — is therefore picked up here automatically. An
+    /// implementation that instead overrides `encode_with_modulators` to do
+    /// something the gains layer cannot express must override this method too,
+    /// or the two paths will emit different spikes.
     fn encode_with_modulators_into(
         &mut self,
         input: &[f32],
@@ -221,7 +233,8 @@ pub trait ModulatedEncoder: Encoder {
     }
 
     /// Streaming counterpart of
-    /// [`encode_with_modulators_into`](Self::encode_with_modulators_into).
+    /// [`encode_with_modulators_into`](Self::encode_with_modulators_into),
+    /// carrying the same overriding rule.
     fn encode_step_with_modulators_into(
         &mut self,
         input: &[f32],
