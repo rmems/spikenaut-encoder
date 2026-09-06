@@ -9,8 +9,9 @@ use axon_encoder::prelude::*;
 /// A downstream runtime's event buffer.
 ///
 /// Stores spikes as packed `(channel, absolute_tick)` pairs — the form the
-/// imaginary consumer actually wants — so no `Vec<SpikeEvent>` is ever built.
-/// The backing storage is allocated once and refilled every step.
+/// imaginary consumer actually wants — so the encoding loop below never builds
+/// a `Vec<SpikeEvent>` at all. The backing storage is allocated once and
+/// refilled every step.
 struct EventBuffer {
     events: Vec<(u16, u64)>,
     /// Absolute tick of the current step, kept by the caller (this crate owns

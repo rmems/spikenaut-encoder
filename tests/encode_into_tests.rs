@@ -761,9 +761,9 @@ fn inherited_modulated_sink_defaults_work_for_out_of_crate_encoders() {
 
 #[test]
 fn chunked_flushing_delivers_every_spike_in_order() {
-    // The sink path buffers spikes internally and flushes them in runs. A spike
-    // count that straddles several run boundaries — and is not a multiple of
-    // one — must still arrive complete and in the returning path's order.
+    // The sink path buffers spikes internally and flushes them in fixed-size
+    // runs. 205 spikes span several of those runs and end mid-run rather than
+    // on a boundary, so a lost or duplicated flush would show up here.
     let channels = 205;
     let mut encoder = LatencyEncoder::new(15, (0.0, 1.0));
     let input: Vec<f32> = (0..channels)
@@ -840,5 +840,147 @@ fn custom_sinks_see_every_spike_whether_or_not_they_batch() {
     assert!(
         recording.runs.len() < channels,
         "spikes should arrive batched, not one call per spike"
+    );
+}
+
+// --- Streaming gain-scaled sink path ------------------------------------------
+
+/// Asserts `encode_step_with_gains_into` matches `encode_step_with_gains`.
+fn assert_step_gain_paths_agree<E: ModulatedEncoder>(
+    label: &str,
+    mut returning: E,
+    mut sink_based: E,
+    gains: EncodingGains,
+    steps: &[&[f32]],
+) {
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+
+    for (index, input) in steps.iter().enumerate() {
+        let expected = returning.encode_step_with_gains(input, gains).spikes;
+
+        buffer.clear();
+        sink_based.encode_step_with_gains_into(input, gains, &mut buffer);
+
+        assert_eq!(
+            buffer, expected,
+            "{label}: streaming gain step {index} diverged"
+        );
+    }
+}
+
+#[test]
+fn streaming_gain_sink_path_matches_returning_path() {
+    let threshold_gains = EncodingGains {
+        threshold_scale: 2.0,
+        ..EncodingGains::identity()
+    };
+    let two_channel: &[&[f32]] = &[&[0.0, 0.0], &[0.5, -0.9], &[0.51, -0.9], &[2.0, 2.0]];
+
+    assert_step_gain_paths_agree(
+        "DeltaEncoder",
+        DeltaEncoder::new(0.1, 2),
+        DeltaEncoder::new(0.1, 2),
+        threshold_gains,
+        two_channel,
+    );
+
+    let low: &[f32] = &[0.0, 0.0];
+    let high: &[f32] = &[1.0, -1.0];
+    assert_step_gain_paths_agree(
+        "PredictiveEncoder",
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        PredictiveEncoder::try_new(5, vec![(0.2, 1)], 2).expect("valid PredictiveEncoder"),
+        threshold_gains,
+        &[low, low, low, low, low, high, high, low],
+    );
+    assert_step_gain_paths_agree(
+        "TemporalEncoder",
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        TemporalEncoder::try_new(6, vec![(0.2, 1)], 2).expect("valid TemporalEncoder"),
+        threshold_gains,
+        &[low, low, low, high, high, high, low, high],
+    );
+
+    let latency_gains = EncodingGains {
+        latency_scale: 0.5,
+        ..EncodingGains::identity()
+    };
+    assert_step_gain_paths_agree(
+        "LatencyEncoder",
+        LatencyEncoder::new(10, (0.0, 1.0)),
+        LatencyEncoder::new(10, (0.0, 1.0)),
+        latency_gains,
+        &[&[0.0, 1.0], &[0.5, f32::NAN]],
+    );
+
+    let sensitivity_gains = EncodingGains {
+        sensitivity_scale: 0.5,
+        ..EncodingGains::identity()
+    };
+    assert_step_gain_paths_agree(
+        "PhaseEncoder",
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        PhaseEncoder::new(8, (0.0, 1.0)),
+        sensitivity_gains,
+        &[&[0.0, 0.5, 1.0], &[1.0, f32::NAN, 0.25]],
+    );
+
+    // PopulationEncoder is stochastic; assert the invariants instead.
+    let mut population = PopulationEncoder::new(32, (0.0, 100.0), 10.0);
+    let mut buffer: Vec<SpikeEvent> = Vec::new();
+    for _ in 0..16 {
+        buffer.clear();
+        population.encode_step_with_gains_into(&[50.0], sensitivity_gains, &mut buffer);
+        assert!(buffer.len() <= 32);
+    }
+}
+
+/// Counts pushes and panics exactly once, at a chosen offset.
+struct PanicOnceSink {
+    seen: Vec<SpikeEvent>,
+    panic_at: usize,
+    armed: bool,
+}
+
+impl SpikeSink for PanicOnceSink {
+    fn push(&mut self, event: SpikeEvent) {
+        if self.armed && self.seen.len() == self.panic_at {
+            self.armed = false;
+            panic!("sink failed mid-flush");
+        }
+        self.seen.push(event);
+    }
+}
+
+#[test]
+fn a_panicking_sink_never_receives_a_replayed_chunk() {
+    // Buffered flushing means a sink panic can land partway through a run. The
+    // adapter must not hand that same run over again while unwinding, or the
+    // sink sees duplicate spikes (and a second panic in `drop` would abort).
+    let channels = 205;
+    let input: Vec<f32> = (0..channels)
+        .map(|i| i as f32 / (channels - 1) as f32)
+        .collect();
+
+    let mut sink = PanicOnceSink {
+        seen: Vec::new(),
+        panic_at: 100, // partway through a run, not on a boundary
+        armed: true,
+    };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut encoder = LatencyEncoder::new(15, (0.0, 1.0));
+        encoder.encode_into(&input, &mut sink);
+    }));
+    assert!(result.is_err(), "the sink was supposed to panic");
+
+    // LatencyEncoder emits one spike per channel in ascending order, so a
+    // replayed run shows up as the sequence jumping backwards. Checking for
+    // *consecutive* duplicates would miss it: a replay appends an earlier run
+    // after a later one, and those two are not adjacent.
+    let channels_seen: Vec<u16> = sink.seen.iter().map(|spike| spike.channel).collect();
+    assert!(
+        channels_seen.windows(2).all(|pair| pair[0] < pair[1]),
+        "a chunk was replayed after the panic: {channels_seen:?}"
     );
 }

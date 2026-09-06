@@ -61,6 +61,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
 struct AllocationStats {
     allocations: usize,
     bytes: usize,
+    /// Spikes the measured step emitted.
+    ///
+    /// Reported so a row cannot claim "0 allocations" for a step that in fact
+    /// emitted nothing: a zero here means the measurement is vacuous, not good.
+    spikes: usize,
 }
 
 fn normalized_input(size: usize) -> Vec<f32> {
@@ -91,6 +96,7 @@ fn measure_operation<T>(operation: impl FnOnce() -> T) -> AllocationStats {
     AllocationStats {
         allocations: ALLOCATION_COUNT.load(Ordering::SeqCst),
         bytes: ALLOCATION_BYTES.load(Ordering::SeqCst),
+        spikes: 0,
     }
 }
 
@@ -102,8 +108,8 @@ fn print_stats(
     stats: AllocationStats,
 ) {
     println!(
-        "{encoder},{operation},{scale_label},{scale},{},{}",
-        stats.allocations, stats.bytes
+        "{encoder},{operation},{scale_label},{scale},{},{},{}",
+        stats.allocations, stats.bytes, stats.spikes
     );
 }
 
@@ -122,10 +128,12 @@ fn measure_reused_step(
         step(buffer);
     }
 
-    measure_operation(|| {
+    let mut stats = measure_operation(|| {
         buffer.clear();
         step(buffer);
-    })
+    });
+    stats.spikes = buffer.len();
+    stats
 }
 
 fn report_rate_encoder() {
@@ -276,8 +284,14 @@ fn report_temporal_encoder_into() {
             encoder.encode_step(input);
         }
 
+        // Alternate levels: a repeated input drives the history to a steady
+        // state where the recent and older averages match, so nothing fires and
+        // the measurement would be vacuous.
+        let mut use_high = true;
         let stats = measure_reused_step(2, &mut buffer, |sink| {
-            encoder.encode_step_into(&high, sink);
+            let input = if use_high { &high } else { &low };
+            use_high = !use_high;
+            encoder.encode_step_into(input, sink);
         });
         print_stats("TemporalEncoder", "encode_step_into", "scale", scale, stats);
     }
@@ -295,8 +309,13 @@ fn report_predictive_encoder_into() {
             encoder.encode_step(&low);
         }
 
+        // Alternate levels so the prediction keeps being wrong; holding one
+        // level lets the threshold converge and the measured step fall silent.
+        let mut use_high = true;
         let stats = measure_reused_step(2, &mut buffer, |sink| {
-            encoder.encode_step_into(&high, sink);
+            let input = if use_high { &high } else { &low };
+            use_high = !use_high;
+            encoder.encode_step_into(input, sink);
         });
         print_stats(
             "PredictiveEncoder",
@@ -330,7 +349,7 @@ fn report_poisson_encoder() {
 }
 
 fn main() {
-    println!("encoder,operation,scale_type,scale,allocations,bytes");
+    println!("encoder,operation,scale_type,scale,allocations,bytes,spikes");
     report_rate_encoder();
     report_population_encoder();
     report_delta_encoder();

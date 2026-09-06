@@ -212,9 +212,14 @@ impl<'a> Chunked<'a> {
     }
 
     fn flush(&mut self) {
-        if self.len > 0 {
-            self.sink.extend_from_slice(&self.buffer[..self.len]);
-            self.len = 0;
+        // Take the length *before* handing the run to the sink. A sink is
+        // caller code and may panic; if it does, unwinding drops this adapter
+        // and `Drop` flushes again. Leaving `len` set until after the call
+        // would re-send the same run — duplicate spikes, or a second panic
+        // inside `drop` and an abort.
+        let len = core::mem::replace(&mut self.len, 0);
+        if len > 0 {
+            self.sink.extend_from_slice(&self.buffer[..len]);
         }
     }
 }
